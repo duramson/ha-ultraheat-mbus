@@ -595,14 +595,18 @@ def read_raw(
     *,
     first_byte_timeout: float = 3.0,
     idle_timeout: float = 0.5,
-    max_duration: float = 10.0,
+    max_duration: float | None = None,
     all_telegrams: bool = False,
 ) -> bytes:
     """Wake the meter, request its data and return the raw bytes received.
 
     By default reading stops as soon as a complete telegram with the current values
-    has arrived. With ``all_telegrams`` it continues until the line is idle.
+    has arrived, at the latest after 10 s. With ``all_telegrams`` it continues until
+    the line is idle, at the latest after 60 s; a T230 sends about 4 KB of storage
+    telegrams (28 telegrams, about 20 s at 2400 baud).
     """
+    if max_duration is None:
+        max_duration = 60.0 if all_telegrams else 10.0
     import serialx  # pylint: disable=import-outside-toplevel
 
     with serialx.serial_for_url(
