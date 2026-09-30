@@ -17,6 +17,7 @@ sys.path.insert(
 )
 
 import mbus  # noqa: E402
+import serialx  # noqa: E402
 
 
 def main() -> int:
@@ -28,7 +29,11 @@ def main() -> int:
     parser.add_argument("--raw", action="store_true", help="print the raw bytes as hex")
     args = parser.parse_args()
 
-    raw = mbus.read_raw(args.port, all_telegrams=args.all)
+    try:
+        raw = mbus.read_raw(args.port, all_telegrams=args.all)
+    except (OSError, serialx.SerialException) as err:
+        print(f"error: cannot use {args.port}: {err}", file=sys.stderr)
+        return 1
     if args.raw:
         print(raw.hex())
     try:
@@ -63,6 +68,8 @@ def main() -> int:
                 f" function={record.function} storage={record.storage}"
                 f" tariff={record.tariff} subunit={record.subunit}"
             )
+    for frame, error in reading.undecoded:
+        print(f"\nundecoded frame ({len(frame)} bytes): {error}")
     return 0
 
 
