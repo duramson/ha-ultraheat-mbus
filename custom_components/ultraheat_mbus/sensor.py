@@ -1,0 +1,182 @@
+"""Sensors for the Ultraheat M-Bus integration."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+)
+from homeassistant.const import (
+    EntityCategory,
+    UnitOfEnergy,
+    UnitOfPower,
+    UnitOfTemperature,
+    UnitOfTime,
+    UnitOfVolume,
+    UnitOfVolumeFlowRate,
+)
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.typing import StateType
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .const import DOMAIN
+from .coordinator import UltraheatConfigEntry, UltraheatCoordinator
+from .mbus import MeterReading
+
+
+@dataclass(frozen=True, kw_only=True)
+class UltraheatSensorEntityDescription(SensorEntityDescription):
+    """Describes an Ultraheat sensor."""
+
+    value_fn: Callable[[MeterReading], StateType]
+
+
+SENSORS: tuple[UltraheatSensorEntityDescription, ...] = (
+    UltraheatSensorEntityDescription(
+        key="heat_energy",
+        translation_key="heat_energy",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=0,
+        value_fn=lambda r: r.heat_energy,
+    ),
+    UltraheatSensorEntityDescription(
+        key="volume",
+        translation_key="volume",
+        native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
+        device_class=SensorDeviceClass.VOLUME,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=2,
+        value_fn=lambda r: r.volume,
+    ),
+    UltraheatSensorEntityDescription(
+        key="power",
+        translation_key="power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
+        value_fn=lambda r: r.power,
+    ),
+    UltraheatSensorEntityDescription(
+        key="volume_flow",
+        translation_key="volume_flow",
+        native_unit_of_measurement=UnitOfVolumeFlowRate.CUBIC_METERS_PER_HOUR,
+        device_class=SensorDeviceClass.VOLUME_FLOW_RATE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=3,
+        value_fn=lambda r: r.volume_flow,
+    ),
+    UltraheatSensorEntityDescription(
+        key="flow_temperature",
+        translation_key="flow_temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_fn=lambda r: r.flow_temperature,
+    ),
+    UltraheatSensorEntityDescription(
+        key="return_temperature",
+        translation_key="return_temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_fn=lambda r: r.return_temperature,
+    ),
+    UltraheatSensorEntityDescription(
+        # A temperature difference must not use the temperature device class, which
+        # would convert it like an absolute temperature.
+        key="temperature_difference",
+        translation_key="temperature_difference",
+        native_unit_of_measurement=UnitOfTemperature.KELVIN,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_fn=lambda r: r.temperature_difference,
+    ),
+    UltraheatSensorEntityDescription(
+        key="operating_time",
+        translation_key="operating_time",
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        suggested_display_precision=0,
+        value_fn=lambda r: r.operating_time,
+    ),
+    UltraheatSensorEntityDescription(
+        key="error_time",
+        translation_key="error_time",
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        suggested_display_precision=0,
+        value_fn=lambda r: r.error_time,
+    ),
+    UltraheatSensorEntityDescription(
+        # The meter clock runs on local standard time without daylight saving and
+        # carries no time zone, so it is exposed as text.
+        key="meter_time",
+        translation_key="meter_time",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda r: r.meter_time.isoformat(sep=" ") if r.meter_time else None,
+    ),
+)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: UltraheatConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+) -> None:
+    """Set up the sensors."""
+    coordinator = entry.runtime_data
+    async_add_entities(
+        UltraheatSensor(coordinator, description)
+        for description in SENSORS
+        if description.value_fn(coordinator.data) is not None
+        or description.key == "meter_time"
+    )
+
+
+class UltraheatSensor(CoordinatorEntity[UltraheatCoordinator], SensorEntity):
+    """A value of the heat meter."""
+
+    _attr_has_entity_name = True
+    entity_description: UltraheatSensorEntityDescription
+
+    def __init__(
+        self,
+        coordinator: UltraheatCoordinator,
+        description: UltraheatSensorEntityDescription,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self.entity_description = description
+        reading = coordinator.data
+        self._attr_unique_id = f"{reading.identification}_{description.key}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, reading.identification)},
+            manufacturer=reading.manufacturer_name,
+            model="Heat meter (M-Bus)",
+            model_id=reading.manufacturer,
+            hw_version=f"M-Bus version {reading.version}",
+            serial_number=reading.fabrication_number or reading.identification,
+            name=f"Heat meter {reading.identification}",
+        )
+
+    @property
+    def native_value(self) -> StateType:
+        """Return the current value."""
+        return self.entity_description.value_fn(self.coordinator.data)

@@ -1,0 +1,46 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "This heat meter is already configured."
+    },
+    "error": {
+      "cannot_connect": "Could not open the serial port or read the meter. Check the port and the logs.",
+      "no_response": "The meter did not answer. Check that the optical head sits centred on the meter's optical interface."
+    },
+    "step": {
+      "user": {
+        "title": "Optical reading head",
+        "description": "Select the serial port of the IR reading head attached to the heat meter. The meter is read once to identify it; this takes a few seconds.",
+        "data": {
+          "device": "Serial port"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "scan_interval": "Polling interval"
+        },
+        "data_description": {
+          "scan_interval": "Every readout wakes the battery-powered meter. The manufacturer allows at most one readout per minute."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "heat_energy": { "name": "Heat energy" },
+      "volume": { "name": "Volume" },
+      "power": { "name": "Power" },
+      "volume_flow": { "name": "Flow rate" },
+      "flow_temperature": { "name": "Flow temperature" },
+      "return_temperature": { "name": "Return temperature" },
+      "temperature_difference": { "name": "Temperature difference" },
+      "operating_time": { "name": "Operating time" },
+      "error_time": { "name": "Error time" },
+      "meter_time": { "name": "Meter time" }
+    }
+  }
+}

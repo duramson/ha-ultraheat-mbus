@@ -1,0 +1,46 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "Dieser Wärmezähler ist bereits eingerichtet."
+    },
+    "error": {
+      "cannot_connect": "Die serielle Schnittstelle konnte nicht geöffnet oder der Zähler nicht gelesen werden. Port und Protokoll prüfen.",
+      "no_response": "Der Zähler hat nicht geantwortet. Prüfen, ob der Lesekopf mittig auf der optischen Schnittstelle sitzt."
+    },
+    "step": {
+      "user": {
+        "title": "Optischer Lesekopf",
+        "description": "Serielle Schnittstelle des IR-Lesekopfs am Wärmezähler auswählen. Der Zähler wird zur Erkennung einmal ausgelesen; das dauert ein paar Sekunden.",
+        "data": {
+          "device": "Serielle Schnittstelle"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "scan_interval": "Abfrageintervall"
+        },
+        "data_description": {
+          "scan_interval": "Jede Abfrage weckt den batteriebetriebenen Zähler. Der Hersteller erlaubt höchstens eine Abfrage pro Minute."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "heat_energy": { "name": "Wärmeenergie" },
+      "volume": { "name": "Volumen" },
+      "power": { "name": "Leistung" },
+      "volume_flow": { "name": "Durchfluss" },
+      "flow_temperature": { "name": "Vorlauftemperatur" },
+      "return_temperature": { "name": "Rücklauftemperatur" },
+      "temperature_difference": { "name": "Temperaturdifferenz" },
+      "operating_time": { "name": "Betriebszeit" },
+      "error_time": { "name": "Fehlzeit" },
+      "meter_time": { "name": "Zähleruhr" }
+    }
+  }
+}
