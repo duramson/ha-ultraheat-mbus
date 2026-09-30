@@ -5,13 +5,15 @@ This module has no Home Assistant dependencies so it can be used and tested on i
 Protocol summary (EN 13757-2/-3 over the optical interface, EN 62056-21 hardware):
 
 * The serial line runs at 2400 baud, 8 data bits, even parity, 1 stop bit throughout.
-* The meter sleeps. It is woken by a preamble of ``0x00`` bytes. The request has to
-  follow the preamble within 11-330 bit times (about 4.6-137 ms at 2400 baud), so the
-  preamble and the request are written in a single call without any pause.
+* The meter sleeps. It is woken by a preamble of ``0x00`` bytes, and the request has
+  to follow the preamble directly: with a pause of a few hundred milliseconds, or with
+  the line settings changed in between, the T230 does not answer. Preamble and request
+  are therefore written in a single call.
 * ``REQ_UD2`` (``10 7B FE 79 16``) to the broadcast address makes the meter answer with
   its full data set as a series of RSP_UD long frames: current values first, followed by
   frames with due-date and monthly storage values.
-* The manufacturer documents a minimum of one minute between readouts.
+* The T230 technical description specifies more than one minute between readouts for
+  its wired M-Bus at 2400 baud. The same minimum is used for the optical interface.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from typing import Any
 BAUDRATE = 2400
 PREAMBLE = b"\x00" * 240
 REQ_UD2 = bytes.fromhex("107BFE7916")
-MIN_READ_INTERVAL = 60  # seconds, from the T230 technical description
+MIN_READ_INTERVAL = 60  # seconds; T230 wired M-Bus minimum, used for the optical port too
 
 C_RSP_UD = 0x08  # control field; ACD and DFC bits masked
 CI_RSP_UD_LONG_HEADER = 0x72

@@ -25,7 +25,7 @@
           "scan_interval": "Abfrageintervall"
         },
         "data_description": {
-          "scan_interval": "Jede Abfrage weckt den batteriebetriebenen Zähler. Der Hersteller erlaubt höchstens eine Abfrage pro Minute."
+          "scan_interval": "Jede Abfrage weckt den batteriebetriebenen Zähler. Zwischen zwei Abfragen muss mindestens eine Minute liegen."
         }
       }
     }

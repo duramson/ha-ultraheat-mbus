@@ -25,7 +25,7 @@
           "scan_interval": "Polling interval"
         },
         "data_description": {
-          "scan_interval": "Every readout wakes the battery-powered meter. The manufacturer allows at most one readout per minute."
+          "scan_interval": "Every readout wakes the battery-powered meter. At least one minute has to pass between two readouts."
         }
       }
     }
