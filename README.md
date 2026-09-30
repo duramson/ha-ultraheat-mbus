@@ -99,7 +99,9 @@ The T230 technical description specifies more than **one minute between readouts
 and does not mention a daily limit. The integration applies the same one-minute minimum to
 the optical port, per serial port and also between the readout during setup and the first
 regular update. Each readout wakes the battery-powered meter, so a moderate interval is
-sensible. Users report polling every 30 minutes over several years without battery problems.
+sensible. A user reports reading two T330 every 30 minutes for five years, until their
+regular replacement, without battery problems
+([Photovoltaikforum, post #89](https://www.photovoltaikforum.com/thread/188234-landis-gyr-ultraheat-t230-w%C3%A4rmez%C3%A4hler-mit-trct5000-und-esphome-wemos-d1-mini-aus/?postID=4232759#post4232759)).
 
 ## How it works
 
