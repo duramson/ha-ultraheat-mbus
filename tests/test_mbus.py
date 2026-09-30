@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
+import struct
 import sys
 import types
 
@@ -199,3 +200,71 @@ def test_read_raw_all_telegrams(fake_port, stream: bytes) -> None:
     frames = mbus.extract_long_frames(stream)
     fake_port([(0.0, ECHO), *((1.2 + 0.3 * i, f) for i, f in enumerate(frames))])
     assert len(mbus.extract_long_frames(mbus.read_raw("/dev/null", all_telegrams=True))) == 7
+
+
+def test_all_frames_decode(stream: bytes) -> None:
+    frames = mbus.extract_long_frames(stream)
+    telegrams = [mbus.parse_telegram(frame) for frame in frames]
+    assert [t.access_number for t in telegrams] == list(range(7))
+
+
+def test_plain_text_vif(stream: bytes) -> None:
+    """The second telegram has plain text VIFs with a VIFE before the length byte."""
+    telegram = mbus.parse_telegram(mbus.extract_long_frames(stream)[1])
+    texts = [r.unit for r in telegram.records if r.quantity == "plain_text"]
+    assert texts == ["FT", "FS", "FE", "FF1", "FF2"]
+    assert telegram.records[-1].vif == 0xFD
+    assert telegram.records[-1].value == 77450  # model / version
+
+
+def test_frame_behind_bogus_length_header(stream: bytes) -> None:
+    frame = mbus.extract_long_frames(stream)[0]
+    assert mbus.extract_long_frames(bytes.fromhex("68 ff ff 68") + frame) == [frame]
+
+
+def test_short_frames_are_ignored() -> None:
+    assert mbus.extract_long_frames(bytes.fromhex("68 00 00 68 00 16")) == []
+    assert mbus.extract_long_frames(bytes.fromhex("68 00 00 68 00 16 00 00 00")) == []
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "01 7c",  # plain text VIF without length
+        "01 7c 05 41",  # plain text VIF shorter than its length
+        "0d 13",  # LVAR missing
+        "0d 13 05 41",  # LVAR data shorter than announced
+        "0d 13 f8",  # reserved LVAR
+        "84",  # DIFE missing
+        "04 93",  # VIFE missing
+        "04 13 01",  # data field too short
+    ],
+)
+def test_truncated_records(data: str) -> None:
+    with pytest.raises(mbus.InvalidFrameError):
+        mbus.parse_records(bytes.fromhex(data))
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        ("0d 13 c2 34 12", 1.234),  # positive BCD, 4 digits
+        ("0d 13 d1 12", -0.012),  # negative BCD, 2 digits
+        ("0d 13 e2 34 12", 4.66),  # binary, 2 bytes
+    ],
+)
+def test_lvar_numbers(data: str, expected: float) -> None:
+    records, _ = mbus.parse_records(bytes.fromhex(data))
+    assert records[0].quantity == "volume"
+    assert records[0].value == expected
+
+
+def test_lvar_ascii() -> None:
+    records, _ = mbus.parse_records(bytes.fromhex("0d fd 11 03 43 42 41"))
+    assert records[0].value == "ABC"
+
+
+def test_float_keeps_precision() -> None:
+    records, _ = mbus.parse_records(bytes.fromhex("05 03") + struct.pack("<f", 1.25))
+    assert records[0].quantity == "energy"
+    assert records[0].value == pytest.approx(0.00125)

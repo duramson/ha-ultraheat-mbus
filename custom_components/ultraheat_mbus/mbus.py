@@ -27,7 +27,9 @@ PREAMBLE = b"\x00" * 240
 REQ_UD2 = bytes.fromhex("107BFE7916")
 MIN_READ_INTERVAL = 60  # seconds, from the T230 technical description
 
+C_RSP_UD = 0x08  # control field; ACD and DFC bits masked
 CI_RSP_UD_LONG_HEADER = 0x72
+_MIN_LONG_FRAME = 9  # 68 L L 68 C A CI CS 16
 
 FUNCTION_INSTANTANEOUS = 0
 FUNCTION_MAXIMUM = 1
@@ -156,26 +158,30 @@ def _checksum(data: bytes) -> int:
 
 
 def extract_long_frames(stream: bytes) -> list[bytes]:
-    """Return all long frames (68 L L 68 ... CS 16) with a valid checksum.
+    """Return all RSP_UD long frames (68 L L 68 C A CI ... CS 16) with a valid checksum.
 
     The stream may contain the echoed preamble and request, partial frames at the end
     (when reading stopped early) and noise; those parts are skipped.
     """
     frames: list[bytes] = []
     i = 0
-    while i <= len(stream) - 6:
-        if stream[i] != 0x68 or stream[i + 3] != 0x68 or stream[i + 1] != stream[i + 2]:
-            i += 1
-            continue
+    while i <= len(stream) - _MIN_LONG_FRAME:
         length = stream[i + 1]
         end = i + 4 + length + 2
-        if end > len(stream):
-            break
-        body = stream[i + 4 : i + 4 + length]
-        if stream[end - 1] == 0x16 and _checksum(body) == stream[end - 2]:
+        if (
+            stream[i] == 0x68
+            and stream[i + 3] == 0x68
+            and length == stream[i + 2]
+            and length >= 3
+            and stream[i + 4] & 0xCF == C_RSP_UD
+            and end <= len(stream)
+            and stream[end - 1] == 0x16
+            and _checksum(stream[i + 4 : end - 2]) == stream[end - 2]
+        ):
             frames.append(stream[i:end])
             i = end
         else:
+            # Not a complete frame: keep searching, a valid frame may start further on.
             i += 1
     return frames
 
@@ -185,6 +191,8 @@ def extract_long_frames(stream: bytes) -> list[bytes]:
 
 def _decode_bcd(data: bytes) -> int:
     digits = data[::-1].hex()
+    if not digits:
+        raise InvalidFrameError("empty BCD value")
     negative = digits[0] == "f"
     if negative:
         digits = digits[1:]
@@ -196,6 +204,30 @@ def _decode_bcd(data: bytes) -> int:
 
 def _decode_int(data: bytes) -> int:
     return int.from_bytes(data, "little", signed=True)
+
+
+def _decode_ascii(data: bytes) -> str:
+    # M-Bus transmits strings with the last character first.
+    return data[::-1].decode("ascii", errors="replace")
+
+
+def _lvar(lvar: int) -> tuple[str, int]:
+    """Return the kind of data and its length in bytes for an LVAR byte."""
+    if lvar <= 0xBF:
+        return "ascii", lvar
+    if 0xC0 <= lvar <= 0xC9:
+        return "bcd", lvar - 0xC0
+    if 0xD0 <= lvar <= 0xD9:
+        return "-bcd", lvar - 0xD0
+    if 0xE0 <= lvar <= 0xEF:
+        return "binary", lvar - 0xE0
+    if 0xF0 <= lvar <= 0xF4:
+        return "binary", 4 * (lvar - 0xEC)
+    if lvar == 0xF5:
+        return "binary", 48
+    if lvar == 0xF6:
+        return "binary", 64
+    raise InvalidFrameError(f"reserved LVAR 0x{lvar:02x}")
 
 
 def decode_type_f(data: bytes) -> datetime | None:
@@ -235,7 +267,7 @@ _DURATION_UNITS = ("s", "min", "h", "d")
 
 def _scale(raw_value: int | float, exponent: int) -> int | float:
     """Apply a decimal exponent without introducing floating point noise."""
-    if exponent >= 0:
+    if exponent >= 0 or isinstance(raw_value, float):
         return raw_value * 10**exponent
     return round(raw_value * 10**exponent, -exponent)
 
@@ -335,9 +367,6 @@ def parse_records(data: bytes) -> tuple[list[DataRecord], bool]:
             raise InvalidFrameError("truncated VIF")
         vif = data[pos]
         pos += 1
-        if (vif & 0x7F) == 0x7C:  # plain text VIF
-            text_length = data[pos]
-            pos += 1 + text_length
         vife: list[int] = []
         extension = vif & 0x80
         while extension:
@@ -346,9 +375,20 @@ def parse_records(data: bytes) -> tuple[list[DataRecord], bool]:
             vife.append(data[pos])
             extension = data[pos] & 0x80
             pos += 1
+        text: str | None = None
+        if (vif & 0x7F) == 0x7C:
+            # Plain text VIF: length byte and ASCII unit, after the VIFE chain
+            # (the T230 sends "34 FC 6E 02 54 46 ...").
+            if pos >= len(data) or pos + 1 + data[pos] > len(data):
+                raise InvalidFrameError("truncated plain text VIF")
+            text = _decode_ascii(data[pos + 1 : pos + 1 + data[pos]])
+            pos += 1 + data[pos]
 
+        lvar_kind: str | None = None
         if data_field == 0x0D:
-            length = data[pos]
+            if pos >= len(data):
+                raise InvalidFrameError("truncated LVAR")
+            lvar_kind, length = _lvar(data[pos])
             pos += 1
         else:
             length = _DATA_LENGTH[data_field]
@@ -359,7 +399,13 @@ def parse_records(data: bytes) -> tuple[list[DataRecord], bool]:
 
         code = vif & 0x7F
         value: Any
-        if data_field in _BCD_FIELDS:
+        if lvar_kind == "ascii":
+            value = _decode_ascii(raw)
+        elif lvar_kind == "bcd":
+            value = _decode_bcd(raw)
+        elif lvar_kind == "-bcd":
+            value = -_decode_bcd(raw)
+        elif data_field in _BCD_FIELDS:
             value = _decode_bcd(raw)
         elif data_field == 0x5:
             value = struct.unpack("<f", raw)[0]
@@ -372,7 +418,9 @@ def parse_records(data: bytes) -> tuple[list[DataRecord], bool]:
         else:
             value = None
 
-        if vif in (0xFB, 0xFD, 0xFF) or code == 0x7C:
+        if text is not None:
+            quantity, unit = "plain_text", text
+        elif vif in (0xFB, 0xFD, 0xFF):
             # Extension tables and manufacturer specific VIFs are kept raw.
             quantity, unit = f"vif_{vif:02x}", None
             if vif == 0xFD and vife and (vife[0] & 0x7F) == 0x17:
