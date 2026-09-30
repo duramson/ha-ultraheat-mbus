@@ -31,6 +31,9 @@
     }
   },
   "entity": {
+    "button": {
+      "import_history": { "name": "Zählerhistorie importieren" }
+    },
     "sensor": {
       "heat_energy": { "name": "Wärmeenergie" },
       "volume": { "name": "Volumen" },
@@ -45,8 +48,14 @@
     }
   },
   "exceptions": {
+    "history_failed": {
+      "message": "Die Historie des Zählers konnte nicht gelesen werden: {error}"
+    },
     "meter_changed": {
       "message": "Der Zähler an {port} meldet die Kennung {found} statt {expected}. Wurde der Zähler getauscht, diesen Eintrag entfernen und den neuen Zähler hinzufügen."
+    },
+    "recorder_not_loaded": {
+      "message": "Der Recorder ist nicht geladen, es gibt keine Statistik zum Importieren."
     }
   }
 }

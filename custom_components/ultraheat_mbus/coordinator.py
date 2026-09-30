@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import timedelta
+from functools import partial
 import logging
 import os
 import time
@@ -16,7 +17,13 @@ from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, READ_TIMEOUT
+from .const import (
+    CONF_SCAN_INTERVAL,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+    READ_ALL_TIMEOUT,
+    READ_TIMEOUT,
+)
 from .mbus import MIN_READ_INTERVAL, MbusError, MeterReading, read_meter
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,13 +48,16 @@ def _canonical_port(port: str) -> str:
     return port if "://" in port else os.path.realpath(port)
 
 
-async def async_read_meter(hass: HomeAssistant, port: str) -> MeterReading:
+async def async_read_meter(
+    hass: HomeAssistant, port: str, *, all_telegrams: bool = False
+) -> MeterReading:
     """Read the meter, serialised per port and at most once per minute.
 
     Within a minute after a successful readout its result is returned again. This
     matters right after the config flow, which reads the meter once to identify it:
     Home Assistant waits for the setup of the new entry before it finishes the flow.
-    After a failed readout the next one waits for the rest of the minute.
+    After a failed readout the next one waits for the rest of the minute. A readout
+    of all telegrams (with the storage values) always waits and reads the meter.
 
     The port stays locked until the readout in the executor has actually finished,
     also when waiting for it timed out or was cancelled.
@@ -57,7 +67,7 @@ async def async_read_meter(hass: HomeAssistant, port: str) -> MeterReading:
     try:
         if state.last_read is not None:
             wait = state.last_read + MIN_READ_INTERVAL - time.monotonic()
-            if wait > 0 and state.last_reading is not None:
+            if wait > 0 and state.last_reading is not None and not all_telegrams:
                 age = MIN_READ_INTERVAL - wait
                 _LOGGER.debug("Using the readout of %s from %.0f s ago", port, age)
                 state.lock.release()
@@ -65,7 +75,7 @@ async def async_read_meter(hass: HomeAssistant, port: str) -> MeterReading:
             if wait > 0:
                 _LOGGER.debug("Waiting %.0f s before reading %s again", wait, port)
                 await asyncio.sleep(wait)
-        job = hass.async_add_executor_job(read_meter, port)
+        job = hass.async_add_executor_job(partial(read_meter, port, all_telegrams=all_telegrams))
     except BaseException:
         state.lock.release()
         raise
@@ -78,7 +88,8 @@ async def async_read_meter(hass: HomeAssistant, port: str) -> MeterReading:
         state.lock.release()
 
     job.add_done_callback(_release)
-    async with asyncio.timeout(READ_TIMEOUT.total_seconds()):
+    timeout = READ_ALL_TIMEOUT if all_telegrams else READ_TIMEOUT
+    async with asyncio.timeout(timeout.total_seconds()):
         return await asyncio.shield(job)
 
 

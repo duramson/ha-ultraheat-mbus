@@ -31,6 +31,9 @@
     }
   },
   "entity": {
+    "button": {
+      "import_history": { "name": "Import meter history" }
+    },
     "sensor": {
       "heat_energy": { "name": "Heat energy" },
       "volume": { "name": "Volume" },
@@ -45,8 +48,14 @@
     }
   },
   "exceptions": {
+    "history_failed": {
+      "message": "Could not read the meter's history: {error}"
+    },
     "meter_changed": {
       "message": "The meter on {port} reports the identification {found} instead of {expected}. If the meter was replaced, remove this entry and add the new meter."
+    },
+    "recorder_not_loaded": {
+      "message": "The recorder is not loaded, so there are no statistics to import into."
     }
   }
 }

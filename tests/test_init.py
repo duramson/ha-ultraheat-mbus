@@ -78,7 +78,7 @@ async def test_port_stays_locked_until_readout_ends(
     release = threading.Event()
     calls: list[str] = []
 
-    def slow_read(port: str) -> MeterReading:
+    def slow_read(port: str, **kwargs: object) -> MeterReading:
         calls.append(port)
         release.wait(5)
         return reading
