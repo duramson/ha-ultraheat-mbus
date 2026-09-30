@@ -1,5 +1,5 @@
 {
-  "name": "Ultraheat M-Bus",
+  "name": "Ultraheat M-Bus (Landis+Gyr, ista, Qundis)",
   "homeassistant": "2026.9.0",
   "render_readme": true
 }

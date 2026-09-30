@@ -59,7 +59,7 @@ USB port instead of by vendor/product ID.
 
 1. HACS → ⋮ → *Custom repositories* → add `https://github.com/duramson/ha-ultraheat-mbus` as
    type *Integration*.
-2. Install *Ultraheat M-Bus* and restart Home Assistant.
+2. Install *Ultraheat M-Bus (Landis+Gyr, ista, Qundis)* and restart Home Assistant.
 
 ### Manual
 
@@ -68,7 +68,8 @@ configuration and restart Home Assistant.
 
 ## Configuration
 
-*Settings → Devices & services → Add integration → Ultraheat M-Bus*, then select the serial
+*Settings → Devices & services → Add integration*, search for *Ultraheat*, *Landis+Gyr* or
+*ista* and select *Ultraheat M-Bus (Landis+Gyr, ista, Qundis)*. Then select the serial
 port of the IR head. The meter is read once during setup to identify it.
 
 The polling interval defaults to 15 minutes and can be changed in the integration options

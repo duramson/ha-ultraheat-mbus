@@ -1,6 +1,6 @@
 {
   "domain": "ultraheat_mbus",
-  "name": "Ultraheat M-Bus",
+  "name": "Ultraheat M-Bus (Landis+Gyr, ista, Qundis)",
   "codeowners": ["@duramson"],
   "config_flow": true,
   "dependencies": ["usb"],
