@@ -316,3 +316,20 @@ def test_redact_frame(stream: bytes) -> None:
     assert [r.quantity for r in first.records if mbus.is_identifying(r)] == [
         "fabrication_number"
     ]
+
+
+def test_storage_history(stream: bytes) -> None:
+    history = mbus.parse_readout(stream).history
+    assert [(h.time, h.heat_energy, h.volume) for h in history] == [
+        (datetime(2025, 12, 31, 23, 59), 0, 0.0),
+        (datetime(2026, 5, 31, 23, 59), 66, 4.87),
+        (datetime(2026, 6, 30, 23, 59), 86, 7.64),
+        (datetime(2026, 7, 31, 23, 59), 102, 10.12),
+        (datetime(2026, 8, 31, 23, 59), 123, 12.27),
+    ]
+
+
+def test_storage_history_needs_dates(stream: bytes) -> None:
+    """Without the storage telegrams there is no dated history."""
+    first = mbus.extract_long_frames(stream)[0]
+    assert mbus.parse_readout(first).history == []

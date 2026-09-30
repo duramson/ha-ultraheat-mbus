@@ -18,8 +18,9 @@ Protocol summary (EN 13757-2/-3 over the optical interface, EN 62056-21 hardware
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 import struct
 import time
 from typing import Any
@@ -124,6 +125,16 @@ class Telegram:
         return None
 
 
+@dataclass(frozen=True)
+class StoredValue:
+    """Cumulative values from the meter's due-date or monthly storage."""
+
+    storage: int
+    time: datetime  # meter clock: local standard time, no time zone
+    heat_energy: float | None  # kWh
+    volume: float | None  # m³
+
+
 @dataclass
 class MeterReading:
     """The current values of a heat meter, taken from the telegram that carries them."""
@@ -146,6 +157,7 @@ class MeterReading:
     meter_time: datetime | None = None
     telegrams: list[Telegram] = field(default_factory=list)
     undecoded: list[tuple[bytes, str]] = field(default_factory=list)  # (frame, error)
+    history: list[StoredValue] = field(default_factory=list)  # oldest first
     raw: bytes = b""
 
     @property
@@ -520,6 +532,52 @@ def redact_frame(frame: bytes) -> bytes:
     return bytes(redacted)
 
 
+def storage_history(telegrams: Iterable[Telegram]) -> list[StoredValue]:
+    """Return the stored cumulative values with their dates, oldest first.
+
+    Storage slots are only returned when the meter also sent their date; a T230 sends
+    those in the telegrams following the first one. Leading slots with the same values
+    (from before the meter was installed) are reduced to the latest of them.
+    """
+    energy: dict[int, float] = {}
+    volume: dict[int, float] = {}
+    times: dict[int, datetime] = {}
+    for telegram in telegrams:
+        for record in telegram.records:
+            if (
+                record.storage == 0
+                or record.function != FUNCTION_INSTANTANEOUS
+                or record.tariff
+                or record.subunit
+                or record.vife
+            ):
+                continue
+            value = record.value
+            if record.quantity == "energy" and isinstance(value, (int, float)):
+                energy.setdefault(record.storage, value)
+            elif record.quantity == "volume" and isinstance(value, (int, float)):
+                volume.setdefault(record.storage, value)
+            elif record.quantity == "datetime" and isinstance(value, datetime):
+                times.setdefault(record.storage, value)
+            elif record.quantity == "date" and isinstance(value, datetime):
+                # A due date means the end of that day.
+                times.setdefault(record.storage, value + timedelta(hours=23, minutes=59))
+    history = sorted(
+        (
+            StoredValue(storage, time, energy.get(storage), volume.get(storage))
+            for storage, time in times.items()
+            if storage in energy or storage in volume
+        ),
+        key=lambda stored: stored.time,
+    )
+    while len(history) > 1 and (history[0].heat_energy, history[0].volume) == (
+        history[1].heat_energy,
+        history[1].volume,
+    ):
+        history.pop(0)
+    return history
+
+
 def _to_hours(record: DataRecord | None) -> float | None:
     if record is None or not isinstance(record.value, (int, float)):
         return None
@@ -583,6 +641,7 @@ def parse_readout(stream: bytes) -> MeterReading:
         meter_time=value("datetime"),
         telegrams=telegrams,
         undecoded=undecoded,
+        history=storage_history(telegrams),
         raw=stream,
     )
 
