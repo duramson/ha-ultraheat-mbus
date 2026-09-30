@@ -43,5 +43,10 @@
       "error_time": { "name": "Error time" },
       "meter_time": { "name": "Meter time" }
     }
+  },
+  "exceptions": {
+    "meter_changed": {
+      "message": "The meter on {port} reports the identification {found} instead of {expected}. If the meter was replaced, remove this entry and add the new meter."
+    }
   }
 }

@@ -43,5 +43,10 @@
       "error_time": { "name": "Fehlzeit" },
       "meter_time": { "name": "Zähleruhr" }
     }
+  },
+  "exceptions": {
+    "meter_changed": {
+      "message": "Der Zähler an {port} meldet die Kennung {found} statt {expected}. Wurde der Zähler getauscht, diesen Eintrag entfernen und den neuen Zähler hinzufügen."
+    }
   }
 }

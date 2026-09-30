@@ -74,6 +74,19 @@ class UltraheatCoordinator(DataUpdateCoordinator[MeterReading]):
     async def _async_update_data(self) -> MeterReading:
         """Fetch the current values from the meter."""
         try:
-            return await async_read_meter(self.hass, self.port)
+            reading = await async_read_meter(self.hass, self.port)
         except (MbusError, OSError, TimeoutError, serialx.SerialException) as err:
             raise UpdateFailed(f"Error reading heat meter on {self.port}: {err}") from err
+        if reading.identification != self.config_entry.unique_id:
+            # Another meter answers on this port (meter replaced or head moved). Its
+            # values must not continue the statistics of the configured meter.
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="meter_changed",
+                translation_placeholders={
+                    "port": self.port,
+                    "expected": str(self.config_entry.unique_id),
+                    "found": reading.identification,
+                },
+            )
+        return reading
