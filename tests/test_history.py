@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
 
+from freezegun.api import FrozenDateTimeFactory
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.components.recorder.common import (
@@ -47,40 +48,58 @@ async def _statistics(hass: HomeAssistant, statistic_id: str) -> list[dict[str, 
     return result.get(statistic_id, [])
 
 
+def _local(year: int, month: int, day: int, hour: int = 23) -> float:
+    """Return the timestamp of a local time in the test time zone."""
+    return datetime(year, month, day, hour, tzinfo=dt_util.get_default_time_zone()).timestamp()
+
+
+def _row(rows: list[dict[str, Any]], start: float) -> tuple[float, float]:
+    row = next(row for row in rows if row["start"] == start)
+    return row["state"], row["sum"]
+
+
 async def test_history_imported_after_setup(
     recorder_mock: Recorder,
     hass: HomeAssistant,
     config_entry: MockConfigEntry,
     read_meter: MagicMock,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
+    freezer.move_to("2026-09-30 17:30:00+00:00")
     config_entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done(wait_background_tasks=True)
 
     energy = await _statistics(hass, ENERGY)
-    assert [(row["state"], row["sum"]) for row in energy] == [
-        (0, 0),
-        (66, 66),
-        (86, 86),
-        (102, 102),
-        (123, 123),
-    ]
-    # 31 May 2026 23:59 on the meter clock, in the test time zone
-    local = datetime(2026, 5, 31, 23, 0, tzinfo=dt_util.get_default_time_zone())
-    assert energy[1]["start"] == local.timestamp()
-    volume = await _statistics(hass, VOLUME)
-    assert [row["state"] for row in volume] == [0.0, 4.87, 7.64, 10.12, 12.27]
+    # The stored values at the month ends are kept exactly ...
+    assert _row(energy, _local(2025, 12, 31)) == (0, 0)
+    assert _row(energy, _local(2026, 5, 31)) == (66, 66)
+    assert _row(energy, _local(2026, 8, 31)) == (123, 123)
+    # ... the days in between are interpolated ...
+    assert _row(energy, _local(2026, 6, 15)) == (76, 76)
+    # ... and the last value is the current reading, in the hour before the current one.
+    assert energy[-1]["start"] == datetime(2026, 9, 30, 16, tzinfo=dt_util.UTC).timestamp()
+    assert (energy[-1]["state"], energy[-1]["sum"]) == (143, 143)
+    assert len(energy) == 274  # one value per day from 31 Dec, plus the last one
+    assert [row["sum"] for row in energy] == sorted(row["sum"] for row in energy)
 
+    volume = await _statistics(hass, VOLUME)
+    assert _row(volume, _local(2026, 8, 31)) == (12.27, 12.27)
+
+    until = datetime(2026, 9, 30, 17, tzinfo=dt_util.UTC).timestamp()
     assert config_entry.data["history_imported"] is True
+    assert config_entry.data["history_until"] == {"heat_energy": until, "volume": until}
     assert read_meter.call_args_list[-1].kwargs == {"all_telegrams": True}
 
 
-async def test_import_keeps_recorded_statistics(
+async def test_import_replaces_imported_values_only(
     recorder_mock: Recorder,
     hass: HomeAssistant,
     read_meter: MagicMock,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
-    """Statistics recorded by Home Assistant stay as they are; history goes before."""
+    """An entry from 0.3.0 gets its month blocks spread; recorded values stay."""
+    freezer.move_to("2026-09-10 12:30:00+00:00")
     entry = MockConfigEntry(
         domain="ultraheat_mbus",
         unique_id="12345678",
@@ -89,13 +108,8 @@ async def test_import_keeps_recorded_statistics(
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done(wait_background_tasks=True)
-    assert await _statistics(hass, ENERGY) == []
 
     recorded_start = datetime(2026, 9, 10, 12, tzinfo=dt_util.UTC)
-    recorded = [
-        {"start": recorded_start, "state": 130, "sum": 1000},
-        {"start": recorded_start + timedelta(hours=1), "state": 131, "sum": 1001},
-    ]
     async_import_statistics(
         hass,
         {
@@ -107,32 +121,30 @@ async def test_import_keeps_recorded_statistics(
             "unit_class": "energy",
             "unit_of_measurement": "kWh",
         },
-        recorded,
+        [
+            # a month block as imported by 0.3.0
+            {"start": dt_util.utc_from_timestamp(_local(2026, 8, 31)), "state": 123, "sum": 993},
+            # recorded by Home Assistant
+            {"start": recorded_start, "state": 130, "sum": 1000},
+            {"start": recorded_start + timedelta(hours=1), "state": 131, "sum": 1001},
+        ],
     )
     await async_wait_recording_done(hass)
 
-    await hass.services.async_call(
-        "button",
-        "press",
-        {"entity_id": "button.heat_meter_12345678_import_meter_history"},
-        blocking=True,
-    )
-    energy = await _statistics(hass, ENERGY)
-    assert [(row["state"], row["sum"]) for row in energy] == [
-        (0, 870),
-        (66, 936),
-        (86, 956),
-        (102, 972),
-        (123, 993),
-        (130, 1000),
-        (131, 1001),
-    ]
-
-    # Importing again changes nothing.
-    await hass.services.async_call(
-        "button",
-        "press",
-        {"entity_id": "button.heat_meter_12345678_import_meter_history"},
-        blocking=True,
-    )
-    assert len(await _statistics(hass, ENERGY)) == 7
+    for _ in range(2):  # importing again gives the same result
+        await hass.services.async_call(
+            "button",
+            "press",
+            {"entity_id": "button.heat_meter_12345678_import_meter_history"},
+            blocking=True,
+        )
+        energy = await _statistics(hass, ENERGY)
+        assert _row(energy, _local(2026, 8, 31)) == (123, 993)
+        assert _row(energy, _local(2026, 5, 31)) == (66, 936)
+        # 1 to 9 September: the 7 kWh up to the first recorded hour are spread
+        assert _row(energy, _local(2026, 9, 5)) == (126.784, 996.784)
+        assert [(row["start"], row["state"], row["sum"]) for row in energy[-2:]] == [
+            (recorded_start.timestamp(), 130, 1000),
+            (recorded_start.timestamp() + 3600, 131, 1001),
+        ]
+    assert entry.data["history_until"]["heat_energy"] == recorded_start.timestamp()

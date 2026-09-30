@@ -49,7 +49,3 @@ async def _async_import_history_once(hass: HomeAssistant, entry: UltraheatConfig
         await async_import_history(hass, entry)
     except (HomeAssistantError, MbusError, OSError, TimeoutError, serialx.SerialException) as err:
         _LOGGER.warning("Could not import the history of heat meter %s: %s", entry.title, err)
-        return
-    hass.config_entries.async_update_entry(
-        entry, data={**entry.data, CONF_HISTORY_IMPORTED: True}
-    )

@@ -102,13 +102,14 @@ and imports them into the long-term statistics of *Heat energy* and *Volume*. Th
 dashboard then shows the months since the meter was installed, not only the time since the
 integration was set up.
 
-- Only monthly values exist. Each month appears as a single value at the end of the month,
-  so the history is meaningful in the monthly and yearly views of the energy dashboard.
+- Only monthly values exist. The consumption between two of them is spread evenly over the
+  days, so the daily and weekly views show an average day instead of one block at the end of
+  each month. Monthly and yearly totals are exact; imported days are estimates.
 - Statistics recorded by Home Assistant are never changed: only times before the first
-  recorded statistic are imported, aligned to it. Importing again changes nothing.
+  recorded hour are imported, aligned to it. The integration remembers that hour, so importing
+  again replaces the imported values and leaves the recorded ones alone.
 - The full readout keeps the meter awake for about 20 seconds, so it runs once and not on
-  every start. If it fails, it is tried again at the next start. Entries set up with an
-  earlier version import the history once after the update; the *Import meter history*
+  every start. If it fails, it is tried again at the next start. The *Import meter history*
   button starts it manually.
 - Costs are not calculated for imported months.
 

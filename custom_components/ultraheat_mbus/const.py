@@ -6,6 +6,7 @@ DOMAIN = "ultraheat_mbus"
 
 CONF_SCAN_INTERVAL = "scan_interval"
 CONF_HISTORY_IMPORTED = "history_imported"
+CONF_HISTORY_UNTIL = "history_until"  # sensor key -> first hour recorded by HA
 
 DEFAULT_SCAN_INTERVAL = 15  # minutes
 MIN_SCAN_INTERVAL = 2  # minutes; at least one minute has to pass between readouts
