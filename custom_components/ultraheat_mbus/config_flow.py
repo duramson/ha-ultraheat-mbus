@@ -13,6 +13,7 @@ from homeassistant.config_entries import (
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlow,
+    OptionsFlowWithReload,
 )
 from homeassistant.const import CONF_DEVICE
 from homeassistant.core import callback
@@ -84,7 +85,7 @@ class UltraheatMbusConfigFlow(ConfigFlow, domain=DOMAIN):
         return UltraheatMbusOptionsFlow()
 
 
-class UltraheatMbusOptionsFlow(OptionsFlow):
+class UltraheatMbusOptionsFlow(OptionsFlowWithReload):
     """Options for the polling interval."""
 
     async def async_step_init(
