@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import timedelta
 import logging
+import os
 import time
 
 import serialx
@@ -34,24 +35,38 @@ def _port_state(hass: HomeAssistant, port: str) -> _PortState:
     return ports.setdefault(port, _PortState())
 
 
+def _canonical_port(port: str) -> str:
+    """Resolve symlinks such as /dev/serial/by-id/... so aliases share one state."""
+    return port if "://" in port else os.path.realpath(port)
+
+
 async def async_read_meter(hass: HomeAssistant, port: str) -> MeterReading:
     """Read the meter, serialised per port and at most once per minute.
 
-    The manufacturer requires at least one minute between two readouts. This matters
-    right after the config flow, which reads the meter once to identify it.
+    The minimum pause matters right after the config flow, which reads the meter
+    once to identify it. The port stays locked until the readout in the executor has
+    actually finished, also when waiting for it timed out or was cancelled.
     """
-    state = _port_state(hass, port)
-    async with state.lock:
+    state = _port_state(hass, await hass.async_add_executor_job(_canonical_port, port))
+    await state.lock.acquire()
+    try:
         if state.last_read is not None:
             wait = state.last_read + MIN_READ_INTERVAL - time.monotonic()
             if wait > 0:
                 _LOGGER.debug("Waiting %.0f s before reading %s again", wait, port)
                 await asyncio.sleep(wait)
-        try:
-            async with asyncio.timeout(READ_TIMEOUT.total_seconds()):
-                return await hass.async_add_executor_job(read_meter, port)
-        finally:
-            state.last_read = time.monotonic()
+        job = hass.async_add_executor_job(read_meter, port)
+    except BaseException:
+        state.lock.release()
+        raise
+
+    def _release(_: asyncio.Future[MeterReading]) -> None:
+        state.last_read = time.monotonic()
+        state.lock.release()
+
+    job.add_done_callback(_release)
+    async with asyncio.timeout(READ_TIMEOUT.total_seconds()):
+        return await asyncio.shield(job)
 
 
 class UltraheatCoordinator(DataUpdateCoordinator[MeterReading]):
