@@ -27,7 +27,7 @@ integration implements.
 |---|---|
 | ista ultego III smart (`u3.0s radio`, type label `T230-…`, article 77450) | single readouts tested, continuous operation under test (see [Limitations](#limitations)) |
 | Landis+Gyr Ultraheat T230 | expected to work (same device) |
-| Landis+Gyr Ultraheat T330 | expected to work (same optical protocol, reported by others) |
+| Landis+Gyr Ultraheat T330 | untested; working T330 scripts use a different request sequence with a switch to 9600 baud, which is not implemented yet |
 | Qundis Qheat 5.5 | expected to work (reported as identical to T230/T330) |
 
 Reports for other meters are welcome. The diagnostics download contains the raw telegrams
