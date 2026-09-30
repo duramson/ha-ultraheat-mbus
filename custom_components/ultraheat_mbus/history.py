@@ -5,9 +5,11 @@ the energy dashboard shows the months before the integration was set up. The met
 stores monthly values; the consumption between two of them is spread evenly over the
 days, so the daily views show an average instead of one block per month.
 
-Only times before the first statistic recorded by Home Assistant are imported, and the
-sums are aligned to it. That hour is kept in the config entry: importing again replaces
-the imported values but never changes statistics recorded by Home Assistant.
+Only times before the first statistic recorded by Home Assistant are imported. The sums
+start at 0 with the oldest imported value, as Home Assistant counts the first sum of a
+statistic as consumption; the running sum of the recorded statistics is shifted to match,
+which leaves their hourly consumption unchanged. The first recorded hour is kept in the
+config entry, so importing again replaces the imported values and changes nothing else.
 """
 
 from __future__ import annotations
@@ -96,11 +98,15 @@ async def async_import_history(hass: HomeAssistant, entry: UltraheatConfigEntry)
             recorded_from = entry.created_at.replace(minute=0, second=0, microsecond=0)
         else:
             recorded_from = None
-        rows, until = await _async_rows(hass, entity_id, values, current, recorded_from)
+        rows, until, adjustment = await _async_rows(
+            hass, entity_id, values, current, recorded_from
+        )
         stored_until[key] = until.timestamp()
         if not rows:
             continue
         metadata = await _async_metadata(hass, entity_id, unit, unit_class)
+        if adjustment:
+            get_instance(hass).async_adjust_statistics(entity_id, until, adjustment, unit)
         async_import_statistics(hass, metadata, rows)
         imported += len(rows)
     hass.config_entries.async_update_entry(
@@ -145,8 +151,12 @@ async def _async_rows(
     values: list[tuple[datetime, float]],
     current: float,
     recorded_from: datetime | None,
-) -> tuple[list[StatisticData], datetime]:
-    """Return the rows to import and the first hour recorded by Home Assistant."""
+) -> tuple[list[StatisticData], datetime, float]:
+    """Return the rows to import, the first recorded hour and the sum adjustment for it.
+
+    The adjustment shifts the sums from the first recorded hour on so that they
+    continue the imported sums, which start at 0.
+    """
     existing = await get_instance(hass).async_add_executor_job(
         statistics_during_period,
         hass,
@@ -163,12 +173,12 @@ async def _async_rows(
         first = recorded[0]
         until = dt_util.utc_from_timestamp(first["start"])
         if first.get("state") is None or first.get("sum") is None:
-            return [], until
+            return [], until, 0.0
         points = [point for point in points if point[0] < until]
         if not points:
-            return [], until
-        anchor_state, anchor_sum = first["state"], first["sum"]
-        spread = _daily(points, (until, anchor_state))
+            return [], until, 0.0
+        spread = _daily(points, (until, first["state"]))
+        adjustment = round(first["state"] - points[0][1] - first["sum"], 6)
     else:
         # Nothing recorded yet: end with the current value in the previous hour and
         # leave the current hour to the recorder, which continues from there.
@@ -176,16 +186,19 @@ async def _async_rows(
         until = now
         points = [point for point in points if point[0] < now - timedelta(hours=1)]
         if not points:
-            return [], until
+            return [], until, 0.0
         end = (now - timedelta(hours=1), current)
         spread = [*_daily(points, end), end]
-        anchor_state, anchor_sum = points[0][1], 0.0
-    return [
-        StatisticData(
-            start=start, state=value, sum=round(anchor_sum - anchor_state + value, 6)
-        )
-        for start, value in spread
-    ], until
+        adjustment = 0.0
+    base = points[0][1]
+    return (
+        [
+            StatisticData(start=start, state=value, sum=round(value - base, 6))
+            for start, value in spread
+        ],
+        until,
+        adjustment,
+    )
 
 
 async def _async_metadata(

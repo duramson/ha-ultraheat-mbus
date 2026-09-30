@@ -98,7 +98,7 @@ async def test_import_replaces_imported_values_only(
     read_meter: MagicMock,
     freezer: FrozenDateTimeFactory,
 ) -> None:
-    """An entry from 0.3.0 gets its month blocks spread; recorded values stay."""
+    """An entry from 0.3.0 gets its month blocks spread; recorded consumption stays."""
     freezer.move_to("2026-09-10 12:30:00+00:00")
     entry = MockConfigEntry(
         domain="ultraheat_mbus",
@@ -139,12 +139,14 @@ async def test_import_replaces_imported_values_only(
             blocking=True,
         )
         energy = await _statistics(hass, ENERGY)
-        assert _row(energy, _local(2026, 8, 31)) == (123, 993)
-        assert _row(energy, _local(2026, 5, 31)) == (66, 936)
+        # The sums start at 0 with the oldest value; the recorded ones are shifted.
+        assert energy[0]["sum"] == 0
+        assert _row(energy, _local(2026, 8, 31)) == (123, 123)
+        assert _row(energy, _local(2026, 5, 31)) == (66, 66)
         # 1 to 9 September: the 7 kWh up to the first recorded hour are spread
-        assert _row(energy, _local(2026, 9, 5)) == (126.784, 996.784)
+        assert _row(energy, _local(2026, 9, 5)) == (126.784, 126.784)
         assert [(row["start"], row["state"], row["sum"]) for row in energy[-2:]] == [
-            (recorded_start.timestamp(), 130, 1000),
-            (recorded_start.timestamp() + 3600, 131, 1001),
+            (recorded_start.timestamp(), 130, 130),
+            (recorded_start.timestamp() + 3600, 131, 131),
         ]
     assert entry.data["history_until"]["heat_energy"] == recorded_start.timestamp()
