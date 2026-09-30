@@ -1,9 +1,20 @@
 # Ultraheat M-Bus
 
-Home Assistant integration for **Landis+Gyr Ultraheat T230 / T330** heat meters (and
-rebranded versions of them) read through the meter's **optical interface** with an IR
-read/write head. It speaks M-Bus (EN 13757-3) over the optical port, fully locally, with no
-cloud, radio key or additional hardware beyond the IR head.
+Home Assistant integration for **Landis+Gyr Ultraheat T230 / T330** heat meters and the
+same meters sold under other names, such as the **ista ultego III smart** and the
+**Qundis Qheat 5.5**. The meter is read through its **optical interface** with an IR
+read/write head. The integration speaks M-Bus (EN 13757-3) over the optical port, fully
+locally, with no cloud, radio key or additional hardware beyond the IR head.
+
+> **Deutsch:** Liest Wärmezähler (Wärmemengenzähler) vom Typ Landis+Gyr Ultraheat
+> T230/T330 über die optische Schnittstelle mit einem IR-Lesekopf (z. B. Hichi) in
+> Home Assistant aus. Das umfasst auch Geräte, die unter anderem Namen verbaut werden,
+> etwa den **ista ultego III smart** (Typschild `T230-…`) aus der Heizkostenabrechnung.
+> Werte: Wärmeenergie (kWh, Energie-Dashboard), Volumen, Leistung, Durchfluss, Vor- und
+> Rücklauftemperatur.
+
+The meter model is printed on the type label. An ista ultego III smart with a type
+label starting with `T230-` is a Landis+Gyr T230.
 
 The existing core integration [Landis+Gyr Heat Meter](https://www.home-assistant.io/integrations/landisgyr_heat_meter/)
 covers the older Ultraheat UH50 / T550, which answer with an IEC 62056-21 text telegram.
@@ -14,13 +25,23 @@ integration implements.
 
 | Meter | Status |
 |---|---|
-| ista ultego III smart (`u3.0s radio`, type label `T230-…`, article 77450) | tested |
+| ista ultego III smart (`u3.0s radio`, type label `T230-…`, article 77450) | single readouts tested, continuous operation under test (see [Limitations](#limitations)) |
 | Landis+Gyr Ultraheat T230 | expected to work (same device) |
 | Landis+Gyr Ultraheat T330 | expected to work (same optical protocol, reported by others) |
 | Qundis Qheat 5.5 | expected to work (reported as identical to T230/T330) |
 
 Reports for other meters are welcome. The diagnostics download contains the raw telegrams
-with the meter identification redacted; please attach it to an issue.
+with identification and fabrication numbers zeroed; please attach it to an issue.
+
+## Limitations
+
+- On the tested ista meter, readouts succeeded within 20 minutes after a button press on the
+  meter; later attempts failed. Whether the optical interface stays active without a button
+  press, and for how long, is still being investigated. If your meter stops answering,
+  press its button and try again; reports on how your meter behaves are welcome.
+- The entities are created from the first readout during setup. If the meter answers with
+  another identification later (meter replaced or head moved to another meter), updates fail
+  until the entry is removed and added again.
 
 ## Hardware
 
@@ -73,11 +94,12 @@ Entities for values a meter does not report are not created.
 
 ## Polling interval and battery
 
-The T230 technical description specifies a minimum of **one minute between readouts** at
-2400 baud; it does not mention a daily limit. Each readout wakes the battery-powered meter,
-so a moderate interval is sensible. Users report polling every 30 minutes over several years
-without battery problems. The integration enforces the one-minute minimum per serial port,
-including between the readout during setup and the first regular update.
+The T230 technical description specifies more than **one minute between readouts** at
+2400 baud for the wired M-Bus connection. It gives no figure for the optical interface
+and does not mention a daily limit. The integration applies the same one-minute minimum to
+the optical port, per serial port and also between the readout during setup and the first
+regular update. Each readout wakes the battery-powered meter, so a moderate interval is
+sensible. Users report polling every 30 minutes over several years without battery problems.
 
 ## How it works
 
@@ -86,23 +108,23 @@ The optical port is a half-duplex serial line at **2400 baud, 8 data bits, even 
 
 1. Send a preamble of 240 × `0x00`.
 2. Send `REQ_UD2` to the broadcast address, `10 7B FE 79 16`, **immediately** after the
-   preamble. According to the manufacturer the request has to start 11 to 330 bit times after
-   the wake-up sequence (about 4.6 to 137 ms), so preamble and request are written as one
-   block. A pause of a few hundred milliseconds, or switching line settings between wake-up and
-   request, results in no answer at all.
+   preamble, in the same write. In tests a pause of about 350 ms, or switching line settings
+   between wake-up and request, resulted in no answer at all.
 3. The meter answers with a series of `RSP_UD` long frames (`68 L L 68 …  CS 16`, CI `0x72`).
    The first frame contains the current values; its last record (DIF `0x1F`) announces further
    frames with due-date and monthly storage values, which the meter sends on its own right
-   after the first one. The integration stops reading after the first complete frame.
+   after the first one. The integration stops reading once the frame with the current values
+   is complete.
 
 Records are decoded according to EN 13757-3 (DIF/DIFE for storage, tariff and function, VIF
-for quantity and scaling, BCD and binary data fields). Records whose VIF is followed by a
+for quantity and scaling, BCD, binary, float and variable length data fields, plain text VIFs). Records whose VIF is followed by a
 VIFE (for example the time stamps of maxima) are kept separate and not interpreted as the
 plain quantity.
 
 The optical head usually receives its own transmission, either directly from its LED or as a
-reflection from the meter's window. This echo is expected and filtered out. It does not
-indicate that the head is positioned correctly; only an answer from the meter does.
+reflection from the meter's window. This echo is expected and filtered out, also when it
+arrives split across several reads. It does not indicate that the head is positioned
+correctly; only an answer from the meter does.
 
 ### Command line
 
@@ -117,7 +139,8 @@ python scripts/read_meter.py /dev/serial/by-id/usb-… --all --raw
 ## Troubleshooting
 
 - **No answer:** check that the head sits centred on the optical port and try rotating it in
-  90° steps. Keep at least one minute between attempts. Some heads suffer from optical
+  90° steps. Press the button on the meter and try again. Keep at least one minute between
+  attempts. Some heads suffer from optical
   crosstalk between their LED and phototransistor; a thin opaque separator between the two has
   helped other users.
 - **Checksum errors or partial frames:** ambient light can disturb the receiver; shading the
@@ -126,7 +149,7 @@ python scripts/read_meter.py /dev/serial/by-id/usb-… --all --raw
 ## References
 
 - Landis+Gyr: *ULTRAHEAT T230 / ULTRACOLD T230 – Technische Beschreibung* (32 18 000 001 f),
-  chapter 9 "Kommunikation".
+  chapter 9 "Kommunikation"; the readout interval is given in 9.1 for the wired M-Bus.
 - EN 13757-2 / EN 13757-3 (M-Bus link layer and application layer).
 - Photovoltaikforum: [Landis+Gyr ULTRAHEAT T230 Wärmezähler mit TRCT5000 und ESPHome/Wemos D1 Mini auslesen?](https://www.photovoltaikforum.com/thread/188234-landis-gyr-ultraheat-t230-w%C3%A4rmez%C3%A4hler-mit-trct5000-und-esphome-wemos-d1-mini-aus/)
 - Akkudoktor forum: [Landis+Gyr ULTRAHEAT T230 Wärmezähler mit Optokopf und Wemos D1 Mini (Tasmota) auslesen?](https://akkudoktor.net/t/landis-gyr-ultraheat-t230-warmezahler-mit-optokopf-und-wemos-d1-mini-tasmota-auslesen/8444)
