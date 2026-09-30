@@ -11,5 +11,5 @@
   "issue_tracker": "https://github.com/duramson/ha-ultraheat-mbus/issues",
   "loggers": ["custom_components.ultraheat_mbus"],
   "requirements": ["serialx>=1.10.0,<2"],
-  "version": "0.3.1"
+  "version": "0.3.2"
 }
