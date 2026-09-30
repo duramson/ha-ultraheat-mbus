@@ -334,7 +334,13 @@ def parse_records(data: bytes) -> tuple[list[DataRecord], bool]:
 
     Returns the records and whether the meter announced further telegrams (DIF 0x1F).
     """
-    records: list[DataRecord] = []
+    records, more = _parse_records(data)
+    return [record for record, _ in records], more
+
+
+def _parse_records(data: bytes) -> tuple[list[tuple[DataRecord, slice]], bool]:
+    """Parse the records and also return where each data field is located."""
+    records: list[tuple[DataRecord, slice]] = []
     pos = 0
     more = False
     while pos < len(data):
@@ -393,7 +399,8 @@ def parse_records(data: bytes) -> tuple[list[DataRecord], bool]:
             pos += 1
         else:
             length = _DATA_LENGTH[data_field]
-        raw = data[pos : pos + length]
+        location = slice(pos, pos + length)
+        raw = data[location]
         if len(raw) != length:
             raise InvalidFrameError("truncated data field")
         pos += length
@@ -438,21 +445,32 @@ def parse_records(data: bytes) -> tuple[list[DataRecord], bool]:
         if quantity == "fabrication_number" and isinstance(value, int):
             value = f"{value:08d}"
 
-        records.append(
-            DataRecord(
-                quantity=quantity,
-                value=value,
-                unit=unit,
-                function=function,
-                storage=storage,
-                tariff=tariff,
-                subunit=subunit,
-                dif=dif,
-                vif=vif,
-                vife=tuple(vife),
-            )
+        record = DataRecord(
+            quantity=quantity,
+            value=value,
+            unit=unit,
+            function=function,
+            storage=storage,
+            tariff=tariff,
+            subunit=subunit,
+            dif=dif,
+            vif=vif,
+            vife=tuple(vife),
         )
+        records.append((record, location))
     return records, more
+
+
+# Customer location, customer and password in the VIF extension table FD.
+_IDENTIFYING_FD_CODES = {0x10, 0x11, 0x16}
+
+
+def is_identifying(record: DataRecord) -> bool:
+    """Return True for records that identify the meter or its owner."""
+    if record.vif == 0xFD:
+        return bool(record.vife) and (record.vife[0] & 0x7F) in _IDENTIFYING_FD_CODES
+    # Fabrication number and enhanced identification.
+    return (record.vif & 0x7F) in (0x78, 0x79)
 
 
 def parse_telegram(frame: bytes) -> Telegram:
@@ -480,6 +498,24 @@ def parse_telegram(frame: bytes) -> Telegram:
         more_records_follow=more,
         raw=frame,
     )
+
+
+def redact_frame(frame: bytes) -> bytes:
+    """Return a telegram with its identification and identifying records zeroed.
+
+    The checksum is recalculated, so the result can still be parsed.
+    """
+    if len(frame) < 21 or frame[6] != CI_RSP_UD_LONG_HEADER:
+        raise InvalidFrameError("not a telegram with a long header")
+    redacted = bytearray(frame)
+    redacted[7:11] = bytes(4)  # identification number
+    records, _ = _parse_records(frame[19:-2])
+    for record, location in records:
+        if is_identifying(record):
+            start, stop = 19 + location.start, 19 + location.stop
+            redacted[start:stop] = bytes(stop - start)
+    redacted[-2] = _checksum(redacted[4:-2])
+    return bytes(redacted)
 
 
 def _to_hours(record: DataRecord | None) -> float | None:

@@ -1,7 +1,9 @@
 """Diagnostics for the Ultraheat M-Bus integration.
 
 The raw telegrams are included so that readouts of other meter models can be analysed.
-Identification and fabrication numbers are redacted.
+Identification and fabrication numbers are zeroed in the raw telegrams and redacted in
+the decoded records. The serial port is redacted as well because its path can contain
+the serial number of the reading head.
 """
 
 from __future__ import annotations
@@ -9,22 +11,20 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
+from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
 
 from .coordinator import UltraheatConfigEntry
-from .mbus import Telegram
+from .mbus import InvalidFrameError, Telegram, is_identifying, redact_frame
 
 _REDACTED = "**REDACTED**"
 
 
-def _redact_frame(telegram: Telegram) -> str:
-    """Return the frame as hex with the identification bytes replaced."""
-    frame = bytearray(telegram.raw)
-    frame[7:11] = b"\x00\x00\x00\x00"
-    return frame.hex(" ")
-
-
 def _telegram(telegram: Telegram) -> dict[str, Any]:
+    try:
+        frame_hex = redact_frame(telegram.raw).hex(" ")
+    except InvalidFrameError:
+        frame_hex = None
     return {
         "manufacturer": telegram.manufacturer,
         "version": telegram.version,
@@ -32,13 +32,11 @@ def _telegram(telegram: Telegram) -> dict[str, Any]:
         "access_number": telegram.access_number,
         "status": telegram.status,
         "more_records_follow": telegram.more_records_follow,
-        "frame_hex_id_redacted": _redact_frame(telegram),
+        "frame_hex_redacted": frame_hex,
         "records": [
             {
                 **{k: v for k, v in asdict(record).items() if k != "value"},
-                "value": _REDACTED
-                if record.quantity == "fabrication_number"
-                else str(record.value),
+                "value": _REDACTED if is_identifying(record) else str(record.value),
             }
             for record in telegram.records
         ],
@@ -51,7 +49,7 @@ async def async_get_config_entry_diagnostics(
     """Return diagnostics for a config entry."""
     reading = entry.runtime_data.data
     return {
-        "port": entry.data.get("device"),
+        "port": _REDACTED if entry.data.get(CONF_DEVICE) else None,
         "options": dict(entry.options),
         "reading": {
             "manufacturer": reading.manufacturer,
@@ -70,4 +68,9 @@ async def async_get_config_entry_diagnostics(
             "meter_time": str(reading.meter_time),
         },
         "telegrams": [_telegram(t) for t in reading.telegrams],
+        # Undecodable frames are not included raw: identifying records in them
+        # cannot be located.
+        "undecoded": [
+            {"length": len(frame), "error": error} for frame, error in reading.undecoded
+        ],
     }

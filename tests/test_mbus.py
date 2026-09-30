@@ -294,3 +294,25 @@ def test_undecoded_frames_are_kept(stream: bytes) -> None:
     reading = mbus.parse_readout(frames[0] + other)
     assert reading.heat_energy == 143
     assert reading.undecoded == [(other, "frame too short")]
+
+
+def test_redact_frame(stream: bytes) -> None:
+    """Redacted telegrams contain no identifying numbers and can still be parsed."""
+    frames = mbus.extract_long_frames(stream)
+    redacted = [mbus.redact_frame(frame) for frame in frames]
+
+    assert mbus.extract_long_frames(b"".join(redacted)) == redacted
+    for frame in redacted:
+        for needle in ("12345678", "87654321"):
+            bcd = bytes.fromhex(needle)[::-1]
+            assert bcd not in frame
+            assert needle.encode() not in frame
+
+    reading = mbus.parse_readout(b"".join(redacted))
+    assert reading.identification == "00000000"
+    assert reading.fabrication_number == "00000000"
+    assert reading.heat_energy == 143
+    first = mbus.parse_telegram(frames[0])
+    assert [r.quantity for r in first.records if mbus.is_identifying(r)] == [
+        "fabrication_number"
+    ]
