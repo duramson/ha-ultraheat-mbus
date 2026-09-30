@@ -503,7 +503,7 @@ def read_raw(
 ) -> bytes:
     """Wake the meter, request its data and return the raw bytes received.
 
-    By default reading stops as soon as the first complete telegram (current values)
+    By default reading stops as soon as a complete telegram with the current values
     has arrived. With ``all_telegrams`` it continues until the line is idle.
     """
     import serialx  # pylint: disable=import-outside-toplevel
@@ -515,45 +515,61 @@ def read_raw(
         parity=serialx.Parity.EVEN,
         stopbits=serialx.StopBits.ONE,
         read_timeout=0.1,
+        write_timeout=2.0,
     ) as conn:
         conn.reset_read_buffer()
+        # No flush(): it waits for the transmission without a timeout. The deadline
+        # below already includes the time the request needs on the wire.
         conn.write(PREAMBLE + REQ_UD2)
-        conn.flush()
 
         buffer = bytearray()
         started = time.monotonic()
         # The request itself takes about 1.1 s on the wire at 2400 baud 8E1.
         first_byte_deadline = started + first_byte_timeout + len(PREAMBLE + REQ_UD2) / 218
+        received = 0  # bytes from the meter, without the echo of the request
         last_data: float | None = None
         while time.monotonic() - started < max_duration:
             chunk = conn.read(512)
             now = time.monotonic()
             if chunk:
                 buffer += chunk
-                if _strip_echo(buffer):
+                meter_data = len(_strip_echo(buffer))
+                if meter_data > received:
                     # Only count data from the meter, not the echo of our own request
                     # (optical heads often see their own transmitter).
+                    received = meter_data
                     last_data = now
-                if not all_telegrams and _has_telegram(buffer):
-                    break
-            elif last_data is None:
-                if now > first_byte_deadline:
-                    break
-            elif now - last_data > idle_timeout:
+                    if not all_telegrams and _has_current_values(buffer):
+                        break
+            elif now < first_byte_deadline:
+                # Give the meter the full time to answer. Stray bytes before the
+                # answer must not start the idle timeout early.
+                continue
+            elif last_data is None or now - last_data > idle_timeout:
                 break
     return bytes(buffer)
 
 
 def _strip_echo(buffer: bytes | bytearray) -> bytes:
-    """Remove an echoed preamble/request from the start of the received data."""
+    """Return the received data without the echoed preamble and request.
+
+    Reads can split the echo anywhere, so an incomplete echo of the request is not
+    mistaken for data from the meter either.
+    """
     data = bytes(buffer).lstrip(b"\x00")
+    if REQ_UD2.startswith(data):
+        return b""
     if data.startswith(REQ_UD2):
         data = data[len(REQ_UD2) :]
     return data.lstrip(b"\x00")
 
 
-def _has_telegram(buffer: bytearray) -> bool:
-    return any(frame[6] == CI_RSP_UD_LONG_HEADER for frame in extract_long_frames(bytes(buffer)))
+def _has_current_values(buffer: bytearray) -> bool:
+    try:
+        parse_readout(bytes(buffer))
+    except MbusError:
+        return False
+    return True
 
 
 def read_meter(port: str, *, all_telegrams: bool = False) -> MeterReading:

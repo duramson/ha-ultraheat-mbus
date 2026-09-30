@@ -3,6 +3,7 @@
 from datetime import datetime
 from pathlib import Path
 import sys
+import types
 
 import pytest
 
@@ -81,6 +82,8 @@ def test_only_echo_raises() -> None:
 def test_strip_echo() -> None:
     assert mbus._strip_echo(mbus.PREAMBLE + mbus.REQ_UD2) == b""
     assert mbus._strip_echo(mbus.PREAMBLE + mbus.REQ_UD2 + b"\x68\x01") == b"\x68\x01"
+    # an incomplete echo of the request is no data from the meter
+    assert mbus._strip_echo(mbus.PREAMBLE + mbus.REQ_UD2[:4]) == b""
 
 
 @pytest.mark.parametrize(
@@ -103,3 +106,96 @@ def test_type_f(data: bytes, expected: datetime | None) -> None:
 )
 def test_bcd(raw: bytes, expected: int) -> None:
     assert mbus._decode_bcd(raw) == expected
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+class _FakeSerial:
+    """Replays chunks at given (virtual) times; each empty read takes 0.1 s."""
+
+    def __init__(self, clock: _Clock, chunks: list[tuple[float, bytes]]) -> None:
+        self._clock = clock
+        self._chunks = list(chunks)
+        self.written = b""
+
+    def __enter__(self) -> "_FakeSerial":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        pass
+
+    def reset_read_buffer(self) -> None:
+        pass
+
+    def write(self, data: bytes) -> int:
+        self.written += data
+        return len(data)
+
+    def read(self, size: int) -> bytes:
+        if self._chunks and self._chunks[0][0] <= self._clock.now:
+            return self._chunks.pop(0)[1][:size]
+        self._clock.now += 0.1
+        return b""
+
+
+@pytest.fixture(name="fake_port")
+def fake_port_fixture(monkeypatch: pytest.MonkeyPatch):
+    """Return a function that makes read_raw() read the given chunks."""
+    clock = _Clock()
+    monkeypatch.setattr(mbus.time, "monotonic", clock.monotonic)
+
+    def install(chunks: list[tuple[float, bytes]]) -> _Clock:
+        fake = types.SimpleNamespace(
+            serial_for_url=lambda *args, **kwargs: _FakeSerial(clock, chunks),
+            Parity=types.SimpleNamespace(EVEN="even"),
+            StopBits=types.SimpleNamespace(ONE=1),
+        )
+        monkeypatch.setitem(sys.modules, "serialx", fake)
+        return clock
+
+    return install
+
+
+ECHO = mbus.PREAMBLE + mbus.REQ_UD2
+
+
+@pytest.mark.parametrize("split", range(1, len(ECHO)))
+def test_read_raw_split_echo(fake_port, stream: bytes, split: int) -> None:
+    """A split echo must not shorten the time the meter has to answer."""
+    frame = mbus.extract_long_frames(stream)[0]
+    fake_port([(0.0, ECHO[:split]), (0.05, ECHO[split:]), (1.2, frame)])
+    reading = mbus.parse_readout(mbus.read_raw("/dev/null"))
+    assert reading.heat_energy == 143
+
+
+def test_read_raw_late_answer(fake_port, stream: bytes) -> None:
+    frame = mbus.extract_long_frames(stream)[0]
+    fake_port([(0.0, ECHO), (3.5, frame)])
+    assert mbus.parse_readout(mbus.read_raw("/dev/null")).heat_energy == 143
+
+
+def test_read_raw_noise_before_answer(fake_port, stream: bytes) -> None:
+    frame = mbus.extract_long_frames(stream)[0]
+    fake_port([(0.0, ECHO), (0.5, b"\xff"), (2.5, frame)])
+    assert mbus.parse_readout(mbus.read_raw("/dev/null")).heat_energy == 143
+
+
+def test_read_raw_echo_only_waits_for_deadline(fake_port) -> None:
+    clock = fake_port([(0.0, ECHO)])
+    raw = mbus.read_raw("/dev/null")
+    assert raw == ECHO
+    assert clock.now >= 3.0
+    with pytest.raises(mbus.NoResponseError):
+        mbus.parse_readout(raw)
+
+
+def test_read_raw_all_telegrams(fake_port, stream: bytes) -> None:
+    frames = mbus.extract_long_frames(stream)
+    fake_port([(0.0, ECHO), *((1.2 + 0.3 * i, f) for i, f in enumerate(frames))])
+    assert len(mbus.extract_long_frames(mbus.read_raw("/dev/null", all_telegrams=True))) == 7
