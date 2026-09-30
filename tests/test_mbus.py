@@ -125,7 +125,7 @@ class _FakeSerial:
         self._chunks = list(chunks)
         self.written = b""
 
-    def __enter__(self) -> "_FakeSerial":
+    def __enter__(self) -> _FakeSerial:
         return self
 
     def __exit__(self, *args: object) -> None:

@@ -1,0 +1,4 @@
+pytest-homeassistant-custom-component==0.13.367
+# requirements of the integration and of its dependency usb
+serialx==1.10.0
+aiousbwatcher==1.1.2
