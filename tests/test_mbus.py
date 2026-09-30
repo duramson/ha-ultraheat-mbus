@@ -268,3 +268,29 @@ def test_float_keeps_precision() -> None:
     records, _ = mbus.parse_records(bytes.fromhex("05 03") + struct.pack("<f", 1.25))
     assert records[0].quantity == "energy"
     assert records[0].value == pytest.approx(0.00125)
+
+
+def test_storage_telegrams_are_no_reading(stream: bytes) -> None:
+    """Without the telegram with the current values there is no reading."""
+    frames = mbus.extract_long_frames(stream)
+    broken = bytearray(frames[0])
+    broken[-2] ^= 0xFF
+    with pytest.raises(mbus.InvalidFrameError):
+        mbus.parse_readout(bytes(broken) + b"".join(frames[1:]))
+
+
+def test_current_values_need_not_come_first(stream: bytes) -> None:
+    frames = mbus.extract_long_frames(stream)
+    reading = mbus.parse_readout(frames[1] + frames[0])
+    assert reading.heat_energy == 143
+    assert reading.telegrams[0].access_number == 1
+
+
+def test_undecoded_frames_are_kept(stream: bytes) -> None:
+    frames = mbus.extract_long_frames(stream)
+    # A valid frame with an unsupported CI field.
+    body = bytes([0x08, 0xFE, 0x78, 0x01])
+    other = bytes([0x68, len(body), len(body), 0x68]) + body + bytes([sum(body) & 0xFF, 0x16])
+    reading = mbus.parse_readout(frames[0] + other)
+    assert reading.heat_energy == 143
+    assert reading.undecoded == [(other, "frame too short")]

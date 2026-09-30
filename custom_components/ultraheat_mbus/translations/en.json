@@ -5,6 +5,7 @@
     },
     "error": {
       "cannot_connect": "Could not open the serial port or read the meter. Check the port and the logs.",
+      "invalid_response": "The meter answered, but the answer contained no current values. Try again in a minute; if it persists, please open an issue with the debug log.",
       "no_response": "The meter did not answer. Check that the optical head sits centred on the meter's optical interface."
     },
     "step": {

@@ -124,7 +124,7 @@ class Telegram:
 
 @dataclass
 class MeterReading:
-    """The current values of a heat meter, taken from the first telegram."""
+    """The current values of a heat meter, taken from the telegram that carries them."""
 
     identification: str
     manufacturer: str
@@ -143,6 +143,7 @@ class MeterReading:
     fabrication_number: str | None = None
     meter_time: datetime | None = None
     telegrams: list[Telegram] = field(default_factory=list)
+    undecoded: list[tuple[bytes, str]] = field(default_factory=list)  # (frame, error)
     raw: bytes = b""
 
     @property
@@ -489,17 +490,26 @@ def _to_hours(record: DataRecord | None) -> float | None:
 
 
 def parse_readout(stream: bytes) -> MeterReading:
-    """Build a MeterReading from everything the meter sent after one REQ_UD2."""
+    """Build a MeterReading from everything the meter sent after one REQ_UD2.
+
+    The current values have to be present; storage telegrams alone are not a reading.
+    """
     telegrams: list[Telegram] = []
+    undecoded: list[tuple[bytes, str]] = []
     for frame in extract_long_frames(stream):
         try:
             telegrams.append(parse_telegram(frame))
-        except InvalidFrameError:
-            continue
-    if not telegrams:
+        except InvalidFrameError as err:
+            undecoded.append((frame, str(err)))
+    if not telegrams and not undecoded:
         raise NoResponseError("no valid telegram received")
 
-    first = telegrams[0]
+    first = next((t for t in telegrams if t.current("energy") is not None), None)
+    if first is None:
+        raise InvalidFrameError(
+            f"no telegram with current values among {len(telegrams) + len(undecoded)}"
+            " received"
+        )
 
     def value(quantity: str) -> Any:
         record = first.current(quantity)
@@ -534,6 +544,7 @@ def parse_readout(stream: bytes) -> MeterReading:
         fabrication_number=value("fabrication_number"),
         meter_time=value("datetime"),
         telegrams=telegrams,
+        undecoded=undecoded,
         raw=stream,
     )
 

@@ -31,7 +31,7 @@ from .const import (
     MIN_SCAN_INTERVAL,
 )
 from .coordinator import async_read_meter
-from .mbus import MbusError, NoResponseError
+from .mbus import InvalidFrameError, MbusError, NoResponseError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -55,6 +55,9 @@ class UltraheatMbusConfigFlow(ConfigFlow, domain=DOMAIN):
                 reading = await async_read_meter(self.hass, port)
             except NoResponseError:
                 errors["base"] = "no_response"
+            except InvalidFrameError as err:
+                _LOGGER.warning("Unexpected answer from the heat meter on %s: %s", port, err)
+                errors["base"] = "invalid_response"
             except (MbusError, OSError, TimeoutError, serialx.SerialException) as err:
                 _LOGGER.warning("Cannot read heat meter on %s: %s", port, err)
                 errors["base"] = "cannot_connect"

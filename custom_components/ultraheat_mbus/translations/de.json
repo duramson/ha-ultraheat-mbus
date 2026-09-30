@@ -5,6 +5,7 @@
     },
     "error": {
       "cannot_connect": "Die serielle Schnittstelle konnte nicht geöffnet oder der Zähler nicht gelesen werden. Port und Protokoll prüfen.",
+      "invalid_response": "Der Zähler hat geantwortet, die Antwort enthielt aber keine aktuellen Werte. In einer Minute erneut versuchen; tritt es wieder auf, bitte ein Issue mit dem Debug-Log eröffnen.",
       "no_response": "Der Zähler hat nicht geantwortet. Prüfen, ob der Lesekopf mittig auf der optischen Schnittstelle sitzt."
     },
     "step": {
