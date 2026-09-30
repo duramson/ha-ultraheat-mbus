@@ -92,6 +92,26 @@ The polling interval defaults to 15 minutes and can be changed in the integratio
 
 Entities for values a meter does not report are not created.
 
+The *Import meter history* button (configuration) reads the meter's history again, see below.
+
+## Meter history
+
+The meter stores its readings at the due date (31 December) and at the end of each month,
+up to about two years back. After the first setup the integration reads these values once
+and imports them into the long-term statistics of *Heat energy* and *Volume*. The energy
+dashboard then shows the months since the meter was installed, not only the time since the
+integration was set up.
+
+- Only monthly values exist. Each month appears as a single value at the end of the month,
+  so the history is meaningful in the monthly and yearly views of the energy dashboard.
+- Statistics recorded by Home Assistant are never changed: only times before the first
+  recorded statistic are imported, aligned to it. Importing again changes nothing.
+- The full readout keeps the meter awake for about 20 seconds, so it runs once and not on
+  every start. If it fails, it is tried again at the next start. Entries set up with an
+  earlier version import the history once after the update; the *Import meter history*
+  button starts it manually.
+- Costs are not calculated for imported months.
+
 ## Polling interval and battery
 
 The T230 technical description specifies more than **one minute between readouts** at
