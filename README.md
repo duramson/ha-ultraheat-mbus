@@ -35,10 +35,9 @@ with identification and fabrication numbers zeroed; please attach it to an issue
 
 ## Limitations
 
-- On the tested ista meter, readouts succeeded within 20 minutes after a button press on the
-  meter; later attempts failed. Whether the optical interface stays active without a button
-  press, and for how long, is still being investigated. If your meter stops answering,
-  press its button and try again; reports on how your meter behaves are welcome.
+- The tested ista meter answers without a button press, also more than an hour after the
+  last one. Long-term operation is still being tested. If your meter stops answering, press
+  its button and try again; reports on how your meter behaves are welcome.
 - The entities are created from the first readout during setup. If the meter answers with
   another identification later (meter replaced or head moved to another meter), updates fail
   until the entry is removed and added again.
