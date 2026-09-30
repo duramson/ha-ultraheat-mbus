@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import asyncio
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ultraheat_mbus.const import DOMAIN
 from custom_components.ultraheat_mbus.mbus import InvalidFrameError, NoResponseError
-from homeassistant.config_entries import SOURCE_USER
+from homeassistant.config_entries import SOURCE_USER, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
@@ -84,3 +85,20 @@ async def test_options_flow(
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert config_entry.options == {"scan_interval": 30}
     assert config_entry.runtime_data.update_interval.total_seconds() == 30 * 60
+
+
+async def test_setup_after_flow_reuses_readout(
+    hass: HomeAssistant, read_meter: MagicMock
+) -> None:
+    """The entry is set up right away with the readout of the flow."""
+    with patch("custom_components.ultraheat_mbus.coordinator.MIN_READ_INTERVAL", 60):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_USER}
+        )
+        async with asyncio.timeout(5):
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"], {"device": PORT}
+            )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["result"].state is ConfigEntryState.LOADED
+    assert read_meter.call_count == 1

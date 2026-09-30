@@ -28,6 +28,7 @@ type UltraheatConfigEntry = ConfigEntry[UltraheatCoordinator]
 class _PortState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_read: float | None = None
+    last_reading: MeterReading | None = None  # of the last readout, if it succeeded
 
 
 def _port_state(hass: HomeAssistant, port: str) -> _PortState:
@@ -43,15 +44,24 @@ def _canonical_port(port: str) -> str:
 async def async_read_meter(hass: HomeAssistant, port: str) -> MeterReading:
     """Read the meter, serialised per port and at most once per minute.
 
-    The minimum pause matters right after the config flow, which reads the meter
-    once to identify it. The port stays locked until the readout in the executor has
-    actually finished, also when waiting for it timed out or was cancelled.
+    Within a minute after a successful readout its result is returned again. This
+    matters right after the config flow, which reads the meter once to identify it:
+    Home Assistant waits for the setup of the new entry before it finishes the flow.
+    After a failed readout the next one waits for the rest of the minute.
+
+    The port stays locked until the readout in the executor has actually finished,
+    also when waiting for it timed out or was cancelled.
     """
     state = _port_state(hass, await hass.async_add_executor_job(_canonical_port, port))
     await state.lock.acquire()
     try:
         if state.last_read is not None:
             wait = state.last_read + MIN_READ_INTERVAL - time.monotonic()
+            if wait > 0 and state.last_reading is not None:
+                age = MIN_READ_INTERVAL - wait
+                _LOGGER.debug("Using the readout of %s from %.0f s ago", port, age)
+                state.lock.release()
+                return state.last_reading
             if wait > 0:
                 _LOGGER.debug("Waiting %.0f s before reading %s again", wait, port)
                 await asyncio.sleep(wait)
@@ -60,8 +70,11 @@ async def async_read_meter(hass: HomeAssistant, port: str) -> MeterReading:
         state.lock.release()
         raise
 
-    def _release(_: asyncio.Future[MeterReading]) -> None:
+    def _release(job: asyncio.Future[MeterReading]) -> None:
         state.last_read = time.monotonic()
+        state.last_reading = (
+            job.result() if not job.cancelled() and job.exception() is None else None
+        )
         state.lock.release()
 
     job.add_done_callback(_release)
