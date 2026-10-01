@@ -13,6 +13,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import (
     EntityCategory,
+    Platform,
     UnitOfEnergy,
     UnitOfPower,
     UnitOfTemperature,
@@ -21,6 +22,7 @@ from homeassistant.const import (
     UnitOfVolumeFlowRate,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
@@ -140,11 +142,23 @@ async def async_setup_entry(
 ) -> None:
     """Set up the sensors."""
     coordinator = entry.runtime_data
+    if coordinator.data is not None:
+        keys = {d.key for d in SENSORS if d.value_fn(coordinator.data) is not None}
+        keys.add("meter_time")
+    else:
+        # Started without an answer from the meter: restore the sensors it had before.
+        prefix = f"{entry.unique_id}_"
+        keys = {
+            registry_entry.unique_id.removeprefix(prefix)
+            for registry_entry in er.async_entries_for_config_entry(
+                er.async_get(hass), entry.entry_id
+            )
+            if registry_entry.domain == Platform.SENSOR
+        }
     async_add_entities(
         UltraheatSensor(coordinator, description)
         for description in SENSORS
-        if description.value_fn(coordinator.data) is not None
-        or description.key == "meter_time"
+        if description.key in keys
     )
 
 
@@ -165,4 +179,6 @@ class UltraheatSensor(UltraheatEntity, SensorEntity):
     @property
     def native_value(self) -> StateType:
         """Return the current value."""
+        if self.coordinator.data is None:
+            return None
         return self.entity_description.value_fn(self.coordinator.data)

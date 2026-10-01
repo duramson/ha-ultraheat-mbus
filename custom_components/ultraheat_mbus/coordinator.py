@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import partial
 import logging
 import os
@@ -14,8 +14,10 @@ import serialx
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_DEVICE
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_SCAN_INTERVAL,
@@ -36,11 +38,30 @@ class _PortState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_read: float | None = None
     last_reading: MeterReading | None = None  # of the last readout, if it succeeded
+    rolling_frame: bool | None = None  # meter sends all telegrams on every request
 
 
 def _port_state(hass: HomeAssistant, port: str) -> _PortState:
     ports: dict[str, _PortState] = hass.data.setdefault(DOMAIN, {})
     return ports.setdefault(port, _PortState())
+
+
+def next_poll(now: datetime, interval: int) -> datetime:
+    """Return when to poll next: one minute before the end of an interval.
+
+    Intervals are counted from local midnight, so with 60 minutes the meter is read at
+    hh:59 and with 15 minutes at hh:14, hh:29, hh:44 and hh:59. The consumption of an
+    hour then lands in that hour of the statistics instead of being split between two.
+    """
+    # Wall clock minutes, so that a change to or from daylight saving time cannot
+    # produce a time in the past.
+    elapsed = now.hour * 60 + now.minute + (now.second + now.microsecond / 1e6) / 60
+    boundary = (int(elapsed + 1) // interval + 1) * interval
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    when = midnight + timedelta(minutes=boundary - 1)
+    if when <= now:  # only around a daylight saving change
+        when += timedelta(minutes=interval)
+    return when
 
 
 def _canonical_port(port: str) -> str:
@@ -75,7 +96,14 @@ async def async_read_meter(
             if wait > 0:
                 _LOGGER.debug("Waiting %.0f s before reading %s again", wait, port)
                 await asyncio.sleep(wait)
-        job = hass.async_add_executor_job(partial(read_meter, port, all_telegrams=all_telegrams))
+        job = hass.async_add_executor_job(
+            partial(
+                read_meter,
+                port,
+                all_telegrams=all_telegrams,
+                first_only=not all_telegrams and state.rolling_frame is True,
+            )
+        )
     except BaseException:
         state.lock.release()
         raise
@@ -85,6 +113,8 @@ async def async_read_meter(
         state.last_reading = (
             job.result() if not job.cancelled() and job.exception() is None else None
         )
+        if state.last_reading is not None and not all_telegrams:
+            state.rolling_frame = state.last_reading.rolling_frame_optical
         state.lock.release()
 
     job.add_done_callback(_release)
@@ -99,16 +129,44 @@ class UltraheatCoordinator(DataUpdateCoordinator[MeterReading]):
     config_entry: UltraheatConfigEntry
 
     def __init__(self, hass: HomeAssistant, config_entry: UltraheatConfigEntry) -> None:
-        """Initialize the coordinator."""
-        interval = config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+        """Initialize the coordinator.
+
+        Polling is scheduled by the coordinator itself (see async_start_polling), so
+        that readouts end just before the interval boundaries.
+        """
         super().__init__(
             hass,
             _LOGGER,
             config_entry=config_entry,
             name=DOMAIN,
-            update_interval=timedelta(minutes=interval),
+            update_interval=None,
         )
         self.port: str = config_entry.data[CONF_DEVICE]
+        self.interval: int = config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+        self._unsub_poll: CALLBACK_TYPE | None = None
+
+    @callback
+    def async_start_polling(self) -> None:
+        """Poll at the next boundary and keep doing so until the entry is unloaded."""
+
+        @callback
+        def _poll(_now: datetime) -> None:
+            self._unsub_poll = None
+            self.config_entry.async_create_background_task(
+                self.hass, self.async_refresh(), "ultraheat_mbus poll"
+            )
+            self.async_start_polling()
+
+        self._unsub_poll = async_track_point_in_time(
+            self.hass, _poll, next_poll(dt_util.now(), self.interval)
+        )
+
+    @callback
+    def async_stop_polling(self) -> None:
+        """Cancel the scheduled poll."""
+        if self._unsub_poll:
+            self._unsub_poll()
+            self._unsub_poll = None
 
     async def _async_update_data(self) -> MeterReading:
         """Fetch the current values from the meter."""
@@ -128,4 +186,10 @@ class UltraheatCoordinator(DataUpdateCoordinator[MeterReading]):
                     "found": reading.identification,
                 },
             )
+        # The access number counts every telegram the meter sends, also unread ones.
+        _LOGGER.debug(
+            "Access number %d, rolling frame %s",
+            reading.telegrams[0].access_number,
+            reading.rolling_frame_optical,
+        )
         return reading

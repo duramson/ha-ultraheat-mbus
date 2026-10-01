@@ -54,6 +54,9 @@
     "meter_changed": {
       "message": "Der Zähler an {port} meldet die Kennung {found} statt {expected}. Wurde der Zähler getauscht, diesen Eintrag entfernen und den neuen Zähler hinzufügen."
     },
+    "no_answer": {
+      "message": "Der Zähler an {port} hat nicht geantwortet. Die Einrichtung wird später erneut versucht."
+    },
     "recorder_not_loaded": {
       "message": "Der Recorder ist nicht geladen, es gibt keine Statistik zum Importieren."
     }

@@ -73,7 +73,10 @@ configuration and restart Home Assistant.
 port of the IR head. The meter is read once during setup to identify it.
 
 The polling interval defaults to 15 minutes and can be changed in the integration options
-(2 to 1440 minutes).
+(2 to 1440 minutes). Readouts take place one minute before the end of each interval,
+counted from midnight: with 60 minutes at hh:59, with 15 minutes at hh:14, hh:29, hh:44 and
+hh:59. The consumption of an hour then ends up in that hour of the statistics instead of
+being split between two.
 
 ## Entities
 
@@ -110,8 +113,8 @@ integration was set up.
   consumption, so the imported sums start at 0 and the running total of the recorded hours is
   shifted to continue them (as *Adjust sum* in the developer tools does). The integration
   remembers the first recorded hour, so importing again only replaces the imported values.
-- The full readout keeps the meter awake for about 20 seconds, so it runs once and not on
-  every start. If it fails, it is tried again at the next start. The *Import meter history*
+- The full readout keeps the meter transmitting for about 20 seconds, so it runs once and
+  not on every start. If it fails, it is tried again at the next start. The *Import meter history*
   button starts it manually.
 - Costs are not calculated for imported months.
 
@@ -122,7 +125,9 @@ The T230 technical description specifies more than **one minute between readouts
 and does not mention a daily limit. The integration applies the same one-minute minimum to
 the optical port, per serial port and also between the readout during setup and the first
 regular update. Each readout wakes the battery-powered meter, so a moderate interval is
-sensible. A user reports reading two T330 every 30 minutes for five years, until their
+sensible. If the meter does not answer when Home Assistant starts, the integration does not
+retry every minute: the entities start unavailable and the next readout follows the
+schedule. A user reports reading two T330 every 30 minutes for five years, until their
 regular replacement, without battery problems
 ([Photovoltaikforum, post #89](https://www.photovoltaikforum.com/thread/188234-landis-gyr-ultraheat-t230-w%C3%A4rmez%C3%A4hler-mit-trct5000-und-esphome-wemos-d1-mini-aus/?postID=4232759#post4232759)).
 
@@ -135,11 +140,15 @@ The optical port is a half-duplex serial line at **2400 baud, 8 data bits, even 
 2. Send `REQ_UD2` to the broadcast address, `10 7B FE 79 16`, **immediately** after the
    preamble, in the same write. In tests a pause of about 350 ms, or switching line settings
    between wake-up and request, resulted in no answer at all.
-3. The meter answers with a series of `RSP_UD` long frames (`68 L L 68 …  CS 16`, CI `0x72`).
-   The first frame contains the current values; its last record (DIF `0x1F`) announces further
-   frames with due-date and monthly storage values, which the meter sends on its own right
-   after the first one. The integration stops reading once the frame with the current values
-   is complete.
+3. The meter answers with an `RSP_UD` long frame (`68 L L 68 …  CS 16`, CI `0x72`) with the
+   current values. If the *rolling frame* of the optical interface is switched on, a T230
+   follows it on its own with 27 frames of due-date and monthly storage values, about 3.8 KB
+   or 20 seconds of transmitting, even when nobody reads them. The manufacturer specific
+   bytes at the end of each frame tell whether it is on. In that case the integration sends
+   an application reset without sub-code (`68 03 03 68 53 FE 50 A1 16`, acknowledged with
+   `E5`) before the next readout, so that the meter sends only the first frame, which is
+   the factory default. For the history import it switches the rolling frame on (sub-code
+   `00`) for one readout and off again afterwards (Landis+Gyr TKB3462, section 5.1).
 
 Records are decoded according to EN 13757-3 (DIF/DIFE for storage, tariff and function, VIF
 for quantity and scaling, BCD, binary, float and variable length data fields, plain text VIFs). Records whose VIF is followed by a
@@ -169,7 +178,7 @@ The error message of a failed readout says what was received instead of an answe
   so check the head, its cable and the serial port.
 - *the meter did not answer, only the echo of the request was received*: the head transmits,
   but the meter stayed silent. See below.
-- *no valid telegram in N bytes*: something answered, but not with a complete telegram. See
+- *no valid answer in N bytes*: something answered, but not with a complete telegram. See
   checksum errors below.
 
 - **No answer:** check that the head sits centred on the optical port and try rotating it in

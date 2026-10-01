@@ -80,12 +80,29 @@ def test_maximum_values_are_not_current(stream: bytes) -> None:
     [
         (mbus.PREAMBLE + mbus.REQ_UD2, "only the echo of the request"),
         (b"", "not even the echo"),
-        (mbus.PREAMBLE + mbus.REQ_UD2 + b"\xff\x68\x01", "no valid telegram in 3 bytes"),
+        (mbus.PREAMBLE + mbus.REQ_UD2 + b"\xff\x68\x01", "no valid answer in 3 bytes"),
     ],
 )
 def test_missing_answer_says_what_arrived(stream: bytes, message: str) -> None:
     with pytest.raises(mbus.NoResponseError, match=message):
         mbus.parse_readout(stream)
+
+
+def test_landis_gyr_manufacturer_data(stream: bytes) -> None:
+    """Firmware version, extension byte and telegram number after DIF 0x1F."""
+    telegrams = [mbus.parse_telegram(f) for f in mbus.extract_long_frames(stream)]
+    assert telegrams[0].manufacturer_data == bytes.fromhex("2107006201")
+    assert telegrams[0].firmware_version == "7.21"
+    assert telegrams[0].rolling_frame_optical is True
+    assert telegrams[1].manufacturer_data[-1] == 2
+
+
+def test_other_manufacturer_data_is_not_interpreted(stream: bytes) -> None:
+    frame = mbus.extract_long_frames(stream)[0]
+    telegram = mbus.parse_telegram(frame)
+    other = mbus.Telegram(**{**telegram.__dict__, "manufacturer": "QDS"})
+    assert other.firmware_version is None
+    assert other.rolling_frame_optical is None
 
 
 def test_strip_echo() -> None:
@@ -202,6 +219,55 @@ def test_read_raw_echo_only_waits_for_deadline(fake_port) -> None:
     assert clock.now >= 3.0
     with pytest.raises(mbus.NoResponseError):
         mbus.parse_readout(raw)
+
+
+def test_send_command_needs_acknowledgement(fake_port) -> None:
+    command = mbus.APP_RESET_FIRST_ONLY
+    fake_port([(0.0, mbus.PREAMBLE + command), (1.2, bytes([mbus.ACK]))])
+    mbus.send_command("/dev/null", command)
+
+
+def test_send_command_without_answer(fake_port) -> None:
+    command = mbus.APP_RESET_FIRST_ONLY
+    fake_port([(0.0, mbus.PREAMBLE + command)])
+    with pytest.raises(mbus.NoResponseError, match="only the echo"):
+        mbus.send_command("/dev/null", command)
+
+
+@pytest.fixture(name="meter")
+def meter_fixture(monkeypatch: pytest.MonkeyPatch, stream: bytes) -> list[bytes]:
+    """Answer commands with an acknowledgement and requests with the recorded readout."""
+    sent: list[bytes] = []
+
+    def read_raw(port: str, *, request: bytes = mbus.REQ_UD2, **kwargs: object) -> bytes:
+        sent.append(request)
+        return stream if request == mbus.REQ_UD2 else request + bytes([mbus.ACK])
+
+    monkeypatch.setattr(mbus, "read_raw", read_raw)
+    return sent
+
+
+def test_read_meter_sends_only_the_request(meter: list[bytes]) -> None:
+    mbus.read_meter("/dev/null")
+    assert meter == [mbus.REQ_UD2]
+
+
+def test_read_meter_switches_to_first_telegram(meter: list[bytes]) -> None:
+    mbus.read_meter("/dev/null", first_only=True)
+    assert meter == [mbus.APP_RESET_FIRST_ONLY, mbus.REQ_UD2]
+
+
+def test_read_all_telegrams_switches_rolling_frame(meter: list[bytes]) -> None:
+    """All telegrams are only sent with the rolling frame on, so it is switched on and off."""
+    reading = mbus.read_meter("/dev/null", all_telegrams=True)
+    assert meter == [mbus.APP_RESET_ALL, mbus.REQ_UD2, mbus.APP_RESET_FIRST_ONLY]
+    assert reading.history
+
+
+def test_application_reset_frames() -> None:
+    """Checksums as in Landis+Gyr TKB3462 and the forum scripts."""
+    assert mbus.APP_RESET_FIRST_ONLY.hex(" ") == "68 03 03 68 53 fe 50 a1 16"
+    assert mbus.APP_RESET_ALL.hex(" ") == "68 04 04 68 53 fe 50 00 a1 16"
 
 
 def test_read_raw_all_telegrams(fake_port, stream: bytes) -> None:

@@ -48,9 +48,13 @@ async def async_get_config_entry_diagnostics(
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
     reading = entry.runtime_data.data
-    return {
+    diagnostics: dict[str, Any] = {
         "port": _REDACTED if entry.data.get(CONF_DEVICE) else None,
         "options": dict(entry.options),
+    }
+    if reading is None:  # no answer since the start
+        return diagnostics
+    return diagnostics | {
         "reading": {
             "manufacturer": reading.manufacturer,
             "version": reading.version,
@@ -66,6 +70,8 @@ async def async_get_config_entry_diagnostics(
             "operating_time": reading.operating_time,
             "error_time": reading.error_time,
             "meter_time": str(reading.meter_time),
+            "firmware_version": reading.firmware_version,
+            "rolling_frame_optical": reading.rolling_frame_optical,
         },
         "telegrams": [_telegram(t) for t in reading.telegrams],
         # Undecodable frames are not included raw: identifying records in them

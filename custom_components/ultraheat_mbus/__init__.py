@@ -8,9 +8,10 @@ import serialx
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 
-from .const import CONF_HISTORY_IMPORTED
+from .const import CONF_HISTORY_IMPORTED, DOMAIN
 from .coordinator import UltraheatConfigEntry, UltraheatCoordinator
 from .history import async_import_history
 from .mbus import MbusError
@@ -23,8 +24,22 @@ PLATFORMS: list[Platform] = [Platform.BUTTON, Platform.SENSOR]
 async def async_setup_entry(hass: HomeAssistant, entry: UltraheatConfigEntry) -> bool:
     """Set up a heat meter from a config entry."""
     coordinator = UltraheatCoordinator(hass, entry)
-    await coordinator.async_config_entry_first_refresh()
+    # A single attempt: Home Assistant retries a failed setup about every minute, and
+    # each attempt wakes the battery-powered meter. If the meter does not answer, the
+    # known entities start unavailable and the regular schedule tries again.
+    await coordinator.async_refresh()
+    if coordinator.data is None and not er.async_entries_for_config_entry(
+        er.async_get(hass), entry.entry_id
+    ):
+        # Nothing known about the meter yet, the entities cannot be created.
+        raise ConfigEntryNotReady(
+            translation_domain=DOMAIN,
+            translation_key="no_answer",
+            translation_placeholders={"port": coordinator.port},
+        )
     entry.runtime_data = coordinator
+    coordinator.async_start_polling()
+    entry.async_on_unload(coordinator.async_stop_polling)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     if not entry.data.get(CONF_HISTORY_IMPORTED):

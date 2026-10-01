@@ -84,7 +84,7 @@ async def test_options_flow(
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert config_entry.options == {"scan_interval": 30}
-    assert config_entry.runtime_data.update_interval.total_seconds() == 30 * 60
+    assert config_entry.runtime_data.interval == 30
 
 
 async def test_setup_after_flow_reuses_readout(

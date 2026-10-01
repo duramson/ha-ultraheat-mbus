@@ -10,8 +10,10 @@ Protocol summary (EN 13757-2/-3 over the optical interface, EN 62056-21 hardware
   the line settings changed in between, the T230 does not answer. Preamble and request
   are therefore written in a single call.
 * ``REQ_UD2`` (``10 7B FE 79 16``) to the broadcast address makes the meter answer with
-  its full data set as a series of RSP_UD long frames: current values first, followed by
-  frames with due-date and monthly storage values.
+  an RSP_UD long frame with the current values. With the "rolling frame" switched on for
+  the optical interface, a T230 follows it on its own with 27 frames of due-date and
+  monthly storage values (about 20 s). An application reset selects between the two
+  (Landis+Gyr TKB3462, section 5.1); the factory default is the first frame only.
 * The T230 technical description specifies more than one minute between readouts for
   its wired M-Bus at 2400 baud. The same minimum is used for the optical interface.
 """
@@ -28,6 +30,13 @@ from typing import Any
 BAUDRATE = 2400
 PREAMBLE = b"\x00" * 240
 REQ_UD2 = bytes.fromhex("107BFE7916")
+# Application reset (SND_UD, CI 0x50) to the broadcast address. A Landis+Gyr T230/T330
+# answers a request with the first telegram only after a reset without sub-code (its
+# factory default), and with all telegrams on the optical interface after a reset with
+# sub-code 00 (rolling frame, Landis+Gyr TKB3462 section 5.1).
+APP_RESET_FIRST_ONLY = bytes.fromhex("68030368" "53FE50" "A116")
+APP_RESET_ALL = bytes.fromhex("68040468" "53FE5000" "A116")
+ACK = 0xE5
 MIN_READ_INTERVAL = 60  # seconds; T230 wired M-Bus minimum, used for the optical port too
 
 C_RSP_UD = 0x08  # control field; ACD and DFC bits masked
@@ -112,10 +121,36 @@ class Telegram:
     records: tuple[DataRecord, ...]
     more_records_follow: bool
     raw: bytes
+    manufacturer_data: bytes = b""  # after DIF 0x0F/0x1F
 
     @property
     def manufacturer_name(self) -> str:
         return MANUFACTURERS.get(self.manufacturer, self.manufacturer)
+
+    @property
+    def _lug_data(self) -> bytes | None:
+        """Return the manufacturer specific data of a Landis+Gyr T230/T330.
+
+        Firmware version (2 bytes, minor first), a reserved byte, the extension byte and
+        the number of the telegram (Landis+Gyr TKB3462, section 5.4).
+        """
+        if self.manufacturer != "LUG" or len(self.manufacturer_data) != 5:
+            return None
+        return self.manufacturer_data
+
+    @property
+    def firmware_version(self) -> str | None:
+        """Return the firmware version of a Landis+Gyr meter, e.g. "7.21"."""
+        if (data := self._lug_data) is None:
+            return None
+        return f"{data[1]:x}.{data[0]:02x}"
+
+    @property
+    def rolling_frame_optical(self) -> bool | None:
+        """Return whether the optical interface sends all telegrams (rolling frame)."""
+        if (data := self._lug_data) is None:
+            return None
+        return bool(data[3] & 0x02)
 
     def current(self, quantity: str) -> DataRecord | None:
         """Return the first current (instantaneous, storage 0) record of a quantity."""
@@ -155,6 +190,8 @@ class MeterReading:
     error_time: float | None = None  # h
     fabrication_number: str | None = None
     meter_time: datetime | None = None
+    firmware_version: str | None = None
+    rolling_frame_optical: bool | None = None
     telegrams: list[Telegram] = field(default_factory=list)
     undecoded: list[tuple[bytes, str]] = field(default_factory=list)  # (frame, error)
     history: list[StoredValue] = field(default_factory=list)  # oldest first
@@ -348,15 +385,19 @@ def parse_records(data: bytes) -> tuple[list[DataRecord], bool]:
 
     Returns the records and whether the meter announced further telegrams (DIF 0x1F).
     """
-    records, more = _parse_records(data)
+    records, more, _ = _parse_records(data)
     return [record for record, _ in records], more
 
 
-def _parse_records(data: bytes) -> tuple[list[tuple[DataRecord, slice]], bool]:
-    """Parse the records and also return where each data field is located."""
+def _parse_records(data: bytes) -> tuple[list[tuple[DataRecord, slice]], bool, bytes]:
+    """Parse the records and also return where each data field is located.
+
+    The manufacturer specific data after DIF 0x0F or 0x1F is returned as well.
+    """
     records: list[tuple[DataRecord, slice]] = []
     pos = 0
     more = False
+    manufacturer_data = b""
     while pos < len(data):
         dif = data[pos]
         pos += 1
@@ -364,6 +405,7 @@ def _parse_records(data: bytes) -> tuple[list[tuple[DataRecord, slice]], bool]:
             continue
         if dif in (0x0F, 0x1F):  # manufacturer specific data up to the end
             more = dif == 0x1F
+            manufacturer_data = data[pos:]
             break
 
         data_field = dif & 0x0F
@@ -472,7 +514,7 @@ def _parse_records(data: bytes) -> tuple[list[tuple[DataRecord, slice]], bool]:
             vife=tuple(vife),
         )
         records.append((record, location))
-    return records, more
+    return records, more, manufacturer_data
 
 
 # Customer location, customer and password in the VIF extension table FD.
@@ -500,7 +542,7 @@ def parse_telegram(frame: bytes) -> Telegram:
     manufacturer = "".join(
         chr(((manufacturer_raw >> shift) & 0x1F) + 64) for shift in (10, 5, 0)
     )
-    records, more = parse_records(frame[19:-2])
+    records, more, manufacturer_data = _parse_records(frame[19:-2])
     return Telegram(
         identification=identification,
         manufacturer=manufacturer,
@@ -508,9 +550,10 @@ def parse_telegram(frame: bytes) -> Telegram:
         medium=header[7],
         access_number=header[8],
         status=header[9],
-        records=tuple(records),
+        records=tuple(record for record, _ in records),
         more_records_follow=more,
         raw=frame,
+        manufacturer_data=manufacturer_data,
     )
 
 
@@ -523,7 +566,7 @@ def redact_frame(frame: bytes) -> bytes:
         raise InvalidFrameError("not a telegram with a long header")
     redacted = bytearray(frame)
     redacted[7:11] = bytes(4)  # identification number
-    records, _ = _parse_records(frame[19:-2])
+    records, _, _ = _parse_records(frame[19:-2])
     for record, location in records:
         if is_identifying(record):
             start, stop = 19 + location.start, 19 + location.stop
@@ -585,15 +628,15 @@ def _to_hours(record: DataRecord | None) -> float | None:
     return record.value * factor
 
 
-def _describe_missing_answer(stream: bytes) -> str:
-    """Say what was received instead of a telegram, as a hint where to look."""
+def _describe_missing_answer(stream: bytes, request: bytes = REQ_UD2) -> str:
+    """Say what was received instead of an answer, as a hint where to look."""
     if not stream:
         # Most heads receive their own request, so silence points at the head or cable.
         return "nothing received, not even the echo of the request"
-    data = _strip_echo(stream)
+    data = _strip_echo(stream, request)
     if not data:
         return "the meter did not answer, only the echo of the request was received"
-    return f"no valid telegram in {len(data)} bytes received after the request"
+    return f"no valid answer in {len(data)} bytes received after the request"
 
 
 def parse_readout(stream: bytes) -> MeterReading:
@@ -650,6 +693,8 @@ def parse_readout(stream: bytes) -> MeterReading:
         error_time=_to_hours(error_time),
         fabrication_number=value("fabrication_number"),
         meter_time=value("datetime"),
+        firmware_version=first.firmware_version,
+        rolling_frame_optical=first.rolling_frame_optical,
         telegrams=telegrams,
         undecoded=undecoded,
         history=storage_history(telegrams),
@@ -667,8 +712,9 @@ def read_raw(
     idle_timeout: float = 0.5,
     max_duration: float | None = None,
     all_telegrams: bool = False,
+    request: bytes = REQ_UD2,
 ) -> bytes:
-    """Wake the meter, request its data and return the raw bytes received.
+    """Wake the meter, send ``request`` and return the raw bytes received.
 
     By default reading stops as soon as a complete telegram with the current values
     has arrived, at the latest after 10 s. With ``all_telegrams`` it continues until
@@ -691,12 +737,12 @@ def read_raw(
         conn.reset_read_buffer()
         # No flush(): it waits for the transmission without a timeout. The deadline
         # below already includes the time the request needs on the wire.
-        conn.write(PREAMBLE + REQ_UD2)
+        conn.write(PREAMBLE + request)
 
         buffer = bytearray()
         started = time.monotonic()
         # The request itself takes about 1.1 s on the wire at 2400 baud 8E1.
-        first_byte_deadline = started + first_byte_timeout + len(PREAMBLE + REQ_UD2) / 218
+        first_byte_deadline = started + first_byte_timeout + len(PREAMBLE + request) / 218
         received = 0  # bytes from the meter, without the echo of the request
         last_data: float | None = None
         while time.monotonic() - started < max_duration:
@@ -704,13 +750,13 @@ def read_raw(
             now = time.monotonic()
             if chunk:
                 buffer += chunk
-                meter_data = len(_strip_echo(buffer))
+                meter_data = len(_strip_echo(buffer, request))
                 if meter_data > received:
                     # Only count data from the meter, not the echo of our own request
                     # (optical heads often see their own transmitter).
                     received = meter_data
                     last_data = now
-                    if not all_telegrams and _has_current_values(buffer):
+                    if request == REQ_UD2 and not all_telegrams and _has_current_values(buffer):
                         break
             elif now < first_byte_deadline:
                 # Give the meter the full time to answer. Stray bytes before the
@@ -721,17 +767,17 @@ def read_raw(
     return bytes(buffer)
 
 
-def _strip_echo(buffer: bytes | bytearray) -> bytes:
+def _strip_echo(buffer: bytes | bytearray, request: bytes = REQ_UD2) -> bytes:
     """Return the received data without the echoed preamble and request.
 
     Reads can split the echo anywhere, so an incomplete echo of the request is not
     mistaken for data from the meter either.
     """
     data = bytes(buffer).lstrip(b"\x00")
-    if REQ_UD2.startswith(data):
+    if request.startswith(data):
         return b""
-    if data.startswith(REQ_UD2):
-        data = data[len(REQ_UD2) :]
+    if data.startswith(request):
+        data = data[len(request) :]
     return data.lstrip(b"\x00")
 
 
@@ -743,6 +789,37 @@ def _has_current_values(buffer: bytearray) -> bool:
     return True
 
 
-def read_meter(port: str, *, all_telegrams: bool = False) -> MeterReading:
-    """Read the meter on ``port`` and return its current values."""
-    return parse_readout(read_raw(port, all_telegrams=all_telegrams))
+def send_command(port: str, command: bytes) -> None:
+    """Wake the meter, send an SND_UD command and wait for its acknowledgement."""
+    stream = read_raw(port, request=command, idle_timeout=0.3)
+    if _strip_echo(stream, command)[:1] != bytes([ACK]):
+        raise NoResponseError(_describe_missing_answer(stream, command))
+
+
+def read_meter(
+    port: str, *, all_telegrams: bool = False, first_only: bool = False
+) -> MeterReading:
+    """Read the meter on ``port`` and return its current values.
+
+    ``first_only`` first switches a meter that sends all its telegrams on every request
+    (Landis+Gyr rolling frame) back to sending only the first one, which carries the
+    current values and takes a fraction of the time on the wire.
+
+    With ``all_telegrams`` the meter is switched to sending all telegrams for this one
+    readout and back to the first telegram afterwards.
+    """
+    if not all_telegrams:
+        if first_only:
+            send_command(port, APP_RESET_FIRST_ONLY)
+        return parse_readout(read_raw(port))
+    try:
+        send_command(port, APP_RESET_ALL)
+    except NoResponseError:
+        pass  # meters without the command may send all telegrams anyway
+    try:
+        return parse_readout(read_raw(port, all_telegrams=True))
+    finally:
+        try:
+            send_command(port, APP_RESET_FIRST_ONLY)
+        except (MbusError, OSError):
+            pass  # the next readout switches it back if necessary

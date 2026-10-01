@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 import threading
 from unittest.mock import MagicMock, patch
@@ -18,6 +18,7 @@ from pytest_homeassistant_custom_component.common import (
 from custom_components.ultraheat_mbus.coordinator import (
     _canonical_port,
     async_read_meter,
+    next_poll,
 )
 from custom_components.ultraheat_mbus.mbus import MeterReading, NoResponseError
 from homeassistant.config_entries import ConfigEntryState
@@ -44,10 +45,72 @@ async def test_setup(
 async def test_setup_retries_without_answer(
     hass: HomeAssistant, config_entry: MockConfigEntry, read_meter: MagicMock
 ) -> None:
+    """Without any known entities, setup has to wait for a first answer."""
     read_meter.side_effect = NoResponseError("no valid telegram received")
     config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(config_entry.entry_id)
     assert config_entry.state is ConfigEntryState.SETUP_RETRY
+
+
+async def test_start_without_answer_keeps_entities(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    read_meter: MagicMock,
+    reading: MeterReading,
+) -> None:
+    """A silent meter at a restart does not hold up the setup."""
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert await hass.config_entries.async_unload(config_entry.entry_id)
+
+    read_meter.side_effect = NoResponseError("no valid telegram received")
+    read_meter.reset_mock()
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert config_entry.state is ConfigEntryState.LOADED
+    assert read_meter.call_count == 1  # tried once, not again and again
+    state = hass.states.get("sensor.heat_meter_12345678_heat_energy")
+    assert state.state == STATE_UNAVAILABLE
+
+    read_meter.side_effect = None
+    read_meter.return_value = reading
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=16))
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.heat_meter_12345678_heat_energy").state == "143"
+
+
+@pytest.mark.parametrize(
+    ("now", "interval", "expected"),
+    [
+        ("10:20:00", 60, "10:59:00"),
+        ("10:58:59", 60, "10:59:00"),
+        ("10:59:00", 60, "11:59:00"),
+        ("10:59:30", 60, "11:59:00"),
+        ("10:13:00", 15, "10:14:00"),
+        ("10:14:30", 15, "10:29:00"),
+        ("23:59:30", 15, "00:14:00"),
+        ("05:00:00", 360, "05:59:00"),
+    ],
+)
+def test_next_poll(now: str, interval: int, expected: str) -> None:
+    """Readouts end one minute before the interval boundaries of the day."""
+    day = datetime(2026, 10, 1, tzinfo=dt_util.get_time_zone("Europe/Berlin"))
+    hour, minute, second = map(int, now.split(":"))
+    result = next_poll(day.replace(hour=hour, minute=minute, second=second), interval)
+    assert result.strftime("%H:%M:%S") == expected
+    assert result > day.replace(hour=hour, minute=minute, second=second)
+
+
+def test_next_poll_daylight_saving() -> None:
+    """Around a clock change the next poll is never in the past."""
+    tz = dt_util.get_time_zone("Europe/Berlin")
+    for day in (datetime(2026, 3, 29, tzinfo=tz), datetime(2026, 10, 25, tzinfo=tz)):
+        now = day
+        for _ in range(48):
+            following = next_poll(now, 60)
+            assert following > now
+            now = following
 
 
 async def test_other_meter_on_port(
@@ -100,6 +163,16 @@ async def test_port_stays_locked_until_readout_ends(
         await hass.async_block_till_done()
         assert len(calls) == 2
         assert (await second).heat_energy == 143
+
+
+async def test_rolling_frame_is_switched_off(
+    hass: HomeAssistant, read_meter: MagicMock
+) -> None:
+    """After a readout with all telegrams, the next one asks for the first only."""
+    await async_read_meter(hass, "/dev/ttyUSB-test")
+    await async_read_meter(hass, "/dev/ttyUSB-test")
+    assert read_meter.call_args_list[0].kwargs["first_only"] is False
+    assert read_meter.call_args_list[1].kwargs["first_only"] is True
 
 
 def test_port_aliases_share_state(tmp_path: Path) -> None:
