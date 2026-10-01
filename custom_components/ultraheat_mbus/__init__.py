@@ -8,11 +8,11 @@ import serialx
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
+from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 
 from .const import CONF_HISTORY_IMPORTED, DOMAIN
-from .coordinator import UltraheatConfigEntry, UltraheatCoordinator
+from .coordinator import MeterChangedError, UltraheatConfigEntry, UltraheatCoordinator
 from .history import async_import_history
 from .mbus import MbusError
 
@@ -28,6 +28,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: UltraheatConfigEntry) ->
     # each attempt wakes the battery-powered meter. If the meter does not answer, the
     # known entities start unavailable and the regular schedule tries again.
     await coordinator.async_refresh()
+    if isinstance(err := coordinator.last_exception, MeterChangedError):
+        # Retrying does not help and would keep waking the other meter.
+        raise ConfigEntryError(
+            translation_domain=DOMAIN,
+            translation_key=err.translation_key,
+            translation_placeholders=err.translation_placeholders,
+        )
     if coordinator.data is None and not er.async_entries_for_config_entry(
         er.async_get(hass), entry.entry_id
     ):

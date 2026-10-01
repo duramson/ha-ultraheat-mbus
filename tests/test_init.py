@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta
+import itertools
 from pathlib import Path
 import threading
 from unittest.mock import MagicMock, patch
@@ -80,6 +81,25 @@ async def test_start_without_answer_keeps_entities(
     assert hass.states.get("sensor.heat_meter_12345678_heat_energy").state == "143"
 
 
+async def test_sensor_added_when_value_appears(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    read_meter: MagicMock,
+    reading: MeterReading,
+) -> None:
+    """A value missing at the start gets its sensor once the meter reports it."""
+    read_meter.return_value = replace(reading, flow_temperature=None)
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.heat_meter_12345678_flow_temperature") is None
+
+    read_meter.return_value = reading
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=16))
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.heat_meter_12345678_flow_temperature") is not None
+
+
 @pytest.mark.parametrize(
     ("now", "interval", "expected"),
     [
@@ -102,15 +122,21 @@ def test_next_poll(now: str, interval: int, expected: str) -> None:
     assert result > day.replace(hour=hour, minute=minute, second=second)
 
 
-def test_next_poll_daylight_saving() -> None:
-    """Around a clock change the next poll is never in the past."""
+@pytest.mark.parametrize("day", [datetime(2026, 3, 29), datetime(2026, 10, 25)])
+@pytest.mark.parametrize("interval", [15, 60])
+def test_next_poll_daylight_saving(day: datetime, interval: int) -> None:
+    """Around a clock change the polls stay one interval apart in real time.
+
+    The repeated hour in October is polled twice, the skipped hour in March not at all.
+    """
     tz = dt_util.get_time_zone("Europe/Berlin")
-    for day in (datetime(2026, 3, 29, tzinfo=tz), datetime(2026, 10, 25, tzinfo=tz)):
-        now = day
-        for _ in range(48):
-            following = next_poll(now, 60)
-            assert following > now
-            now = following
+    now = day.replace(tzinfo=tz)
+    polls = []
+    for _ in range(3 * 60 // interval + 2 * 60 // interval):
+        # As Home Assistant passes it on: the local time of the real point in time.
+        now = next_poll(now, interval).astimezone(dt_util.UTC).astimezone(tz)
+        polls.append(now.timestamp())
+    assert {b - a for a, b in itertools.pairwise(polls)} == {interval * 60}
 
 
 async def test_other_meter_on_port(
@@ -132,6 +158,24 @@ async def test_other_meter_on_port(
     assert state.state == STATE_UNAVAILABLE
     assert config_entry.runtime_data.last_update_success is False
     assert config_entry.runtime_data.data.heat_energy == 143
+
+
+async def test_start_with_other_meter_on_port(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    read_meter: MagicMock,
+    reading: MeterReading,
+) -> None:
+    """At a restart, another meter on the port stops the setup instead of retrying."""
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert await hass.config_entries.async_unload(config_entry.entry_id)
+
+    read_meter.return_value = replace(reading, identification="99999999")
+    assert not await hass.config_entries.async_setup(config_entry.entry_id)
+    assert config_entry.state is ConfigEntryState.SETUP_ERROR
+    assert config_entry.reason is not None
 
 
 async def test_port_stays_locked_until_readout_ends(
@@ -173,6 +217,21 @@ async def test_rolling_frame_is_switched_off(
     await async_read_meter(hass, "/dev/ttyUSB-test")
     assert read_meter.call_args_list[0].kwargs["first_only"] is False
     assert read_meter.call_args_list[1].kwargs["first_only"] is True
+
+
+async def test_poll_does_not_reuse_the_setup_readout(
+    hass: HomeAssistant, config_entry: MockConfigEntry, read_meter: MagicMock
+) -> None:
+    """Started shortly before a boundary, the poll there still reads the meter."""
+    with patch("custom_components.ultraheat_mbus.coordinator.MIN_READ_INTERVAL", 60):
+        config_entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+        assert read_meter.call_count == 1
+        with patch("custom_components.ultraheat_mbus.coordinator.asyncio.sleep") as sleep:
+            await config_entry.runtime_data.async_refresh()
+    assert sleep.call_count == 1  # waits for the rest of the minute
+    assert read_meter.call_count == 2
 
 
 async def test_rolling_frame_is_switched_off_after_all_telegrams(

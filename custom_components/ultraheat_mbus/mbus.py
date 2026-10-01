@@ -192,6 +192,7 @@ class MeterReading:
     meter_time: datetime | None = None
     firmware_version: str | None = None
     rolling_frame_optical: bool | None = None
+    access_number: int | None = None  # of the telegram with the current values
     telegrams: list[Telegram] = field(default_factory=list)
     undecoded: list[tuple[bytes, str]] = field(default_factory=list)  # (frame, error)
     history: list[StoredValue] = field(default_factory=list)  # oldest first
@@ -700,6 +701,7 @@ def parse_readout(stream: bytes) -> MeterReading:
         meter_time=value("datetime"),
         firmware_version=first.firmware_version,
         rolling_frame_optical=first.rolling_frame_optical,
+        access_number=first.access_number,
         telegrams=telegrams,
         undecoded=undecoded,
         history=storage_history(telegrams),
@@ -721,9 +723,10 @@ def read_raw(
     """Wake the meter, send ``request`` and return the raw bytes received.
 
     Reading continues until the line is idle, so whatever the meter sends is received
-    and the parser decides what it was: a single telegram with the current values,
+    and the parser decides what it was: a single telegram with the current values or
     all 28 telegrams of a T230 with the rolling frame on (about 4 KB or 20 s at
-    2400 baud), or the acknowledgement of a command.
+    2400 baud). A command other than ``REQ_UD2`` is answered with a single byte, so
+    reading ends with its acknowledgement.
     """
     import serialx  # pylint: disable=import-outside-toplevel
 
@@ -752,12 +755,14 @@ def read_raw(
             now = time.monotonic()
             if chunk:
                 buffer += chunk
-                meter_data = len(_strip_echo(buffer, request))
-                if meter_data > received:
+                meter_data = _strip_echo(buffer, request)
+                if len(meter_data) > received:
                     # Only count data from the meter, not the echo of our own request
                     # (optical heads often see their own transmitter).
-                    received = meter_data
+                    received = len(meter_data)
                     last_data = now
+                    if request != REQ_UD2 and meter_data[:1] == bytes([ACK]):
+                        break
             elif now < first_byte_deadline:
                 # Give the meter the full time to answer. Stray bytes before the
                 # answer must not start the idle timeout early.
@@ -783,7 +788,7 @@ def _strip_echo(buffer: bytes | bytearray, request: bytes = REQ_UD2) -> bytes:
 
 def send_command(port: str, command: bytes) -> None:
     """Wake the meter, send an SND_UD command and wait for its acknowledgement."""
-    stream = read_raw(port, request=command, idle_timeout=0.3)
+    stream = read_raw(port, request=command)
     if _strip_echo(stream, command)[:1] != bytes([ACK]):
         raise NoResponseError(_describe_missing_answer(stream, command))
 
@@ -802,6 +807,9 @@ def read_meter(
     """
     if all_telegrams:
         return parse_readout(read_raw_all_telegrams(port))
+    # Command and request may follow each other right away: on a T230, switching the
+    # rolling frame on, reading and switching it off again in a row was acknowledged
+    # and answered.
     if first_only:
         try:
             send_command(port, APP_RESET_FIRST_ONLY)

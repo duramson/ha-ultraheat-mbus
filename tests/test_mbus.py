@@ -223,8 +223,9 @@ def test_read_raw_echo_only_waits_for_deadline(fake_port) -> None:
 
 def test_send_command_needs_acknowledgement(fake_port) -> None:
     command = mbus.APP_RESET_FIRST_ONLY
-    fake_port([(0.0, mbus.PREAMBLE + command), (1.2, bytes([mbus.ACK]))])
+    clock = fake_port([(0.0, mbus.PREAMBLE + command), (1.2, bytes([mbus.ACK]))])
     mbus.send_command("/dev/null", command)
+    assert clock.now < 2.0  # not waiting for the rest of the first byte deadline
 
 
 def test_send_command_without_answer(fake_port) -> None:
@@ -378,6 +379,7 @@ def test_current_values_need_not_come_first(stream: bytes) -> None:
     reading = mbus.parse_readout(frames[1] + frames[0])
     assert reading.heat_energy == 143
     assert reading.telegrams[0].access_number == 1
+    assert reading.access_number == 0  # of the telegram with the current values
 
 
 def test_undecoded_frames_are_kept(stream: bytes) -> None:

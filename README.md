@@ -38,9 +38,11 @@ with identification and fabrication numbers zeroed; please attach it to an issue
 - The tested ista meter answers without a button press, also more than an hour after the
   last one. Long-term operation is still being tested. If your meter stops answering, press
   its button and try again; reports on how your meter behaves are welcome.
-- The entities are created from the first readout during setup. If the meter answers with
-  another identification later (meter replaced or head moved to another meter), updates fail
-  until the entry is removed and added again.
+- The entities are created from the first readout during setup; values the meter reports
+  only later get their sensor when they first appear. If the meter answers with another
+  identification later (meter replaced or head moved to another meter), updates fail, and
+  after a restart the setup stops with an error instead of waking the other meter again
+  and again. Remove the entry and add the meter again, or reload it once the head is back.
 
 ## Hardware
 

@@ -32,6 +32,10 @@ _LOGGER = logging.getLogger(__name__)
 type UltraheatConfigEntry = ConfigEntry[UltraheatCoordinator]
 
 
+class MeterChangedError(UpdateFailed):
+    """Another meter than the configured one answers on the port."""
+
+
 @dataclass
 class _PortState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -52,15 +56,23 @@ def next_poll(now: datetime, interval: int) -> datetime:
     hh:59 and with 15 minutes at hh:14, hh:29, hh:44 and hh:59. The consumption of an
     hour then lands in that hour of the statistics instead of being split between two.
     """
-    # Wall clock minutes, so that a change to or from daylight saving time cannot
-    # produce a time in the past.
-    elapsed = now.hour * 60 + now.minute + (now.second + now.microsecond / 1e6) / 60
-    boundary = (int(elapsed + 1) // interval + 1) * interval
+    # Boundaries are wall clock times. Around a change of daylight saving time the
+    # wall clock jumps by up to an hour: a time in the skipped hour stands for the
+    # same time an hour later (fold 0), and the repeated hour has every time twice
+    # (fold 0 and 1). So the candidates cover an hour on either side, and the
+    # earliest one that is really still ahead wins.
+    minute = now.hour * 60 + now.minute + 1
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    when = midnight + timedelta(minutes=boundary - 1)
-    if when <= now:  # only around a daylight saving change
-        when += timedelta(minutes=interval)
-    return when
+    first = max((minute - 60) // interval * interval, interval)
+    candidates = (
+        (midnight + timedelta(minutes=boundary - 1)).replace(fold=fold)
+        for boundary in range(first, minute + interval + 61, interval)
+        for fold in (0, 1)
+    )
+    return min(
+        (when for when in candidates if when.timestamp() > now.timestamp()),
+        key=datetime.timestamp,
+    )
 
 
 def _canonical_port(port: str) -> str:
@@ -69,7 +81,7 @@ def _canonical_port(port: str) -> str:
 
 
 async def async_read_meter(
-    hass: HomeAssistant, port: str, *, all_telegrams: bool = False
+    hass: HomeAssistant, port: str, *, all_telegrams: bool = False, reuse_recent: bool = True
 ) -> MeterReading:
     """Read the meter, serialised per port and at most once per minute.
 
@@ -77,7 +89,8 @@ async def async_read_meter(
     matters right after the config flow, which reads the meter once to identify it:
     Home Assistant waits for the setup of the new entry before it finishes the flow.
     After a failed readout the next one waits for the rest of the minute. A readout
-    of all telegrams (with the storage values) always waits and reads the meter.
+    of all telegrams (with the storage values), and one with ``reuse_recent`` off,
+    always waits and reads the meter.
 
     The port stays locked until the readout in the executor has actually finished,
     also when waiting for it timed out or was cancelled.
@@ -87,7 +100,8 @@ async def async_read_meter(
     try:
         if state.last_read is not None:
             wait = state.last_read + MIN_READ_INTERVAL - time.monotonic()
-            if wait > 0 and state.last_reading is not None and not all_telegrams:
+            reuse = reuse_recent and not all_telegrams
+            if wait > 0 and state.last_reading is not None and reuse:
                 age = MIN_READ_INTERVAL - wait
                 _LOGGER.debug("Using the readout of %s from %.0f s ago", port, age)
                 state.lock.release()
@@ -148,10 +162,12 @@ class UltraheatCoordinator(DataUpdateCoordinator[MeterReading]):
         self.port: str = config_entry.data[CONF_DEVICE]
         self.interval: int = config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
         self._unsub_poll: CALLBACK_TYPE | None = None
+        self._polling = False
 
     @callback
     def async_start_polling(self) -> None:
         """Poll at the next boundary and keep doing so until the entry is unloaded."""
+        self._polling = True
 
         @callback
         def _poll(_now: datetime) -> None:
@@ -175,13 +191,18 @@ class UltraheatCoordinator(DataUpdateCoordinator[MeterReading]):
     async def _async_update_data(self) -> MeterReading:
         """Fetch the current values from the meter."""
         try:
-            reading = await async_read_meter(self.hass, self.port)
+            # Only the readout during setup may reuse the one of the config flow. A
+            # scheduled poll closes an interval, so it waits for the minute between
+            # readouts if necessary: it starts a minute before the boundary.
+            reading = await async_read_meter(
+                self.hass, self.port, reuse_recent=not self._polling
+            )
         except (MbusError, OSError, TimeoutError, serialx.SerialException) as err:
             raise UpdateFailed(f"Error reading heat meter on {self.port}: {err}") from err
         if reading.identification != self.config_entry.unique_id:
             # Another meter answers on this port (meter replaced or head moved). Its
             # values must not continue the statistics of the configured meter.
-            raise UpdateFailed(
+            raise MeterChangedError(
                 translation_domain=DOMAIN,
                 translation_key="meter_changed",
                 translation_placeholders={
@@ -192,9 +213,9 @@ class UltraheatCoordinator(DataUpdateCoordinator[MeterReading]):
             )
         # The access number counts every telegram the meter sends, also unread ones.
         _LOGGER.debug(
-            "%d telegrams received, access number %d, rolling frame %s",
+            "%d telegrams received, access number %s, rolling frame %s",
             reading.frames,
-            reading.telegrams[0].access_number,
+            reading.access_number,
             reading.rolling_frame_optical,
         )
         return reading

@@ -21,7 +21,7 @@ from homeassistant.const import (
     UnitOfVolume,
     UnitOfVolumeFlowRate,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
@@ -142,24 +142,35 @@ async def async_setup_entry(
 ) -> None:
     """Set up the sensors."""
     coordinator = entry.runtime_data
-    if coordinator.data is not None:
-        keys = {d.key for d in SENSORS if d.value_fn(coordinator.data) is not None}
-        keys.add("meter_time")
-    else:
+    added: set[str] = set()
+
+    def add(keys: set[str]) -> None:
+        new = [d for d in SENSORS if d.key in keys - added]
+        added.update(d.key for d in new)
+        if new:
+            async_add_entities(UltraheatSensor(coordinator, d) for d in new)
+
+    @callback
+    def add_reported() -> None:
+        """Add a sensor for every value the meter reports."""
+        if (reading := coordinator.data) is not None:
+            add({d.key for d in SENSORS if d.value_fn(reading) is not None} | {"meter_time"})
+
+    if coordinator.data is None:
         # Started without an answer from the meter: restore the sensors it had before.
         prefix = f"{entry.unique_id}_"
-        keys = {
-            registry_entry.unique_id.removeprefix(prefix)
-            for registry_entry in er.async_entries_for_config_entry(
-                er.async_get(hass), entry.entry_id
-            )
-            if registry_entry.domain == Platform.SENSOR
-        }
-    async_add_entities(
-        UltraheatSensor(coordinator, description)
-        for description in SENSORS
-        if description.key in keys
-    )
+        add(
+            {
+                registry_entry.unique_id.removeprefix(prefix)
+                for registry_entry in er.async_entries_for_config_entry(
+                    er.async_get(hass), entry.entry_id
+                )
+                if registry_entry.domain == Platform.SENSOR
+            }
+        )
+    add_reported()
+    # Values the meter did not report at the start get their sensor when they appear.
+    entry.async_on_unload(coordinator.async_add_listener(add_reported))
 
 
 class UltraheatSensor(UltraheatEntity, SensorEntity):
