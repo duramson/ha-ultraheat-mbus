@@ -163,6 +163,15 @@ python scripts/read_meter.py /dev/serial/by-id/usb-… --all --raw
 
 ## Troubleshooting
 
+The error message of a failed readout says what was received instead of an answer:
+
+- *nothing received, not even the echo of the request*: most heads receive their own request,
+  so check the head, its cable and the serial port.
+- *the meter did not answer, only the echo of the request was received*: the head transmits,
+  but the meter stayed silent. See below.
+- *no valid telegram in N bytes*: something answered, but not with a complete telegram. See
+  checksum errors below.
+
 - **No answer:** check that the head sits centred on the optical port and try rotating it in
   90° steps. Press the button on the meter and try again. Keep at least one minute between
   attempts. Some heads suffer from optical

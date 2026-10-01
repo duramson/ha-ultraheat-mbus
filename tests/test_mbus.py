@@ -75,9 +75,17 @@ def test_maximum_values_are_not_current(stream: bytes) -> None:
     assert first.current("power").value == 0
 
 
-def test_only_echo_raises() -> None:
-    with pytest.raises(mbus.NoResponseError):
-        mbus.parse_readout(mbus.PREAMBLE + mbus.REQ_UD2)
+@pytest.mark.parametrize(
+    ("stream", "message"),
+    [
+        (mbus.PREAMBLE + mbus.REQ_UD2, "only the echo of the request"),
+        (b"", "not even the echo"),
+        (mbus.PREAMBLE + mbus.REQ_UD2 + b"\xff\x68\x01", "no valid telegram in 3 bytes"),
+    ],
+)
+def test_missing_answer_says_what_arrived(stream: bytes, message: str) -> None:
+    with pytest.raises(mbus.NoResponseError, match=message):
+        mbus.parse_readout(stream)
 
 
 def test_strip_echo() -> None:

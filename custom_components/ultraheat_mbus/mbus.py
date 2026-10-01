@@ -585,6 +585,17 @@ def _to_hours(record: DataRecord | None) -> float | None:
     return record.value * factor
 
 
+def _describe_missing_answer(stream: bytes) -> str:
+    """Say what was received instead of a telegram, as a hint where to look."""
+    if not stream:
+        # Most heads receive their own request, so silence points at the head or cable.
+        return "nothing received, not even the echo of the request"
+    data = _strip_echo(stream)
+    if not data:
+        return "the meter did not answer, only the echo of the request was received"
+    return f"no valid telegram in {len(data)} bytes received after the request"
+
+
 def parse_readout(stream: bytes) -> MeterReading:
     """Build a MeterReading from everything the meter sent after one REQ_UD2.
 
@@ -598,7 +609,7 @@ def parse_readout(stream: bytes) -> MeterReading:
         except InvalidFrameError as err:
             undecoded.append((frame, str(err)))
     if not telegrams and not undecoded:
-        raise NoResponseError("no valid telegram received")
+        raise NoResponseError(_describe_missing_answer(stream))
 
     first = next((t for t in telegrams if t.current("energy") is not None), None)
     if first is None:
