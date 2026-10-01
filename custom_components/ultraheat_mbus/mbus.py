@@ -21,7 +21,7 @@ Protocol summary (EN 13757-2/-3 over the optical interface, EN 62056-21 hardware
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 import struct
 import time
@@ -37,6 +37,12 @@ REQ_UD2 = bytes.fromhex("107BFE7916")
 APP_RESET_FIRST_ONLY = bytes.fromhex("68030368" "53FE50" "A116")
 APP_RESET_ALL = bytes.fromhex("68040468" "53FE5000" "A116")
 ACK = 0xE5
+# "Get meter state" (SND_UD, CI 0x51, command 0x0F) to the broadcast address. A T230
+# answers with its operating mode and firmware versions as text, e.g. "Nb+7.217.21F",
+# and changes nothing (Landis+Gyr TKB3462 section 2). Landis+Gyr software and scripts
+# that read these meters reliably send it before the data request.
+STATUS_REQUEST = bytes.fromhex("68050568" "53FE510F0F" "C016")
+CI_STATUS = 0x78
 MIN_READ_INTERVAL = 60  # seconds; T230 wired M-Bus minimum, used for the optical port too
 
 C_RSP_UD = 0x08  # control field; ACD and DFC bits masked
@@ -193,6 +199,7 @@ class MeterReading:
     firmware_version: str | None = None
     rolling_frame_optical: bool | None = None
     access_number: int | None = None  # of the telegram with the current values
+    meter_state: str | None = None  # answer to STATUS_REQUEST, if it was sent
     telegrams: list[Telegram] = field(default_factory=list)
     undecoded: list[tuple[bytes, str]] = field(default_factory=list)  # (frame, error)
     history: list[StoredValue] = field(default_factory=list)  # oldest first
@@ -793,8 +800,21 @@ def send_command(port: str, command: bytes) -> None:
         raise NoResponseError(_describe_missing_answer(stream, command))
 
 
+def request_status(port: str) -> str:
+    """Wake the meter, ask for its state (STATUS_REQUEST) and return the status text."""
+    stream = read_raw(port, request=STATUS_REQUEST)
+    for frame in extract_long_frames(stream):
+        if frame[6] == CI_STATUS:
+            return frame[8:-2].decode("ascii", "replace")
+    raise NoResponseError(_describe_missing_answer(stream, STATUS_REQUEST))
+
+
 def read_meter(
-    port: str, *, all_telegrams: bool = False, first_only: bool = False
+    port: str,
+    *,
+    all_telegrams: bool = False,
+    first_only: bool = False,
+    status_first: bool = False,
 ) -> MeterReading:
     """Read the meter on ``port`` and return its current values.
 
@@ -804,9 +824,18 @@ def read_meter(
 
     With ``all_telegrams`` the meter is switched to sending all telegrams for this one
     readout and back to the first telegram afterwards.
+
+    ``status_first`` asks for the meter state before the data request. The data
+    request is sent also when the state request stays unanswered.
     """
+    meter_state = None
+    if status_first:
+        try:
+            meter_state = request_status(port)
+        except NoResponseError:
+            pass  # the data request shows whether the meter answers at all
     if all_telegrams:
-        return parse_readout(read_raw_all_telegrams(port))
+        return replace(parse_readout(read_raw_all_telegrams(port)), meter_state=meter_state)
     # Command and request may follow each other right away: on a T230, switching the
     # rolling frame on, reading and switching it off again in a row was acknowledged
     # and answered.
@@ -815,7 +844,7 @@ def read_meter(
             send_command(port, APP_RESET_FIRST_ONLY)
         except NoResponseError:
             pass  # read anyway: the request is answered either way, only with more frames
-    return parse_readout(read_raw(port))
+    return replace(parse_readout(read_raw(port)), meter_state=meter_state)
 
 
 def read_raw_all_telegrams(port: str) -> bytes:

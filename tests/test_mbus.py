@@ -235,6 +235,31 @@ def test_send_command_without_answer(fake_port) -> None:
         mbus.send_command("/dev/null", command)
 
 
+def _status_answer(text: bytes) -> bytes:
+    body = bytes([0x08, 0xFE, mbus.CI_STATUS, 0x0F]) + text
+    return bytes([0x68, len(body), len(body), 0x68]) + body + bytes([sum(body) & 0xFF, 0x16])
+
+
+STATUS_ANSWER = _status_answer(b"Nb+7.217.21F")
+
+
+def test_status_request_frame() -> None:
+    """Get meter state as in Landis+Gyr TKB3462 section 2 and the reference scripts."""
+    assert mbus.STATUS_REQUEST.hex(" ") == "68 05 05 68 53 fe 51 0f 0f c0 16"
+
+
+def test_request_status(fake_port) -> None:
+    request = mbus.STATUS_REQUEST
+    fake_port([(0.0, mbus.PREAMBLE + request), (1.2, STATUS_ANSWER)])
+    assert mbus.request_status("/dev/null") == "Nb+7.217.21F"
+
+
+def test_request_status_without_answer(fake_port) -> None:
+    fake_port([(0.0, mbus.PREAMBLE + mbus.STATUS_REQUEST)])
+    with pytest.raises(mbus.NoResponseError, match="only the echo"):
+        mbus.request_status("/dev/null")
+
+
 @pytest.fixture(name="meter")
 def meter_fixture(monkeypatch: pytest.MonkeyPatch, stream: bytes) -> list[bytes]:
     """Answer commands with an acknowledgement and requests with the recorded readout."""
@@ -242,6 +267,8 @@ def meter_fixture(monkeypatch: pytest.MonkeyPatch, stream: bytes) -> list[bytes]
 
     def read_raw(port: str, *, request: bytes = mbus.REQ_UD2, **kwargs: object) -> bytes:
         sent.append(request)
+        if request == mbus.STATUS_REQUEST:
+            return request + STATUS_ANSWER
         return stream if request == mbus.REQ_UD2 else request + bytes([mbus.ACK])
 
     monkeypatch.setattr(mbus, "read_raw", read_raw)
@@ -251,6 +278,12 @@ def meter_fixture(monkeypatch: pytest.MonkeyPatch, stream: bytes) -> list[bytes]
 def test_read_meter_sends_only_the_request(meter: list[bytes]) -> None:
     mbus.read_meter("/dev/null")
     assert meter == [mbus.REQ_UD2]
+
+
+def test_read_meter_asks_for_state_first(meter: list[bytes]) -> None:
+    reading = mbus.read_meter("/dev/null", status_first=True)
+    assert meter == [mbus.STATUS_REQUEST, mbus.REQ_UD2]
+    assert reading.meter_state == "Nb+7.217.21F"
 
 
 def test_read_meter_switches_to_first_telegram(meter: list[bytes]) -> None:

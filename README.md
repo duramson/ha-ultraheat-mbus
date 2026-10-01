@@ -75,10 +75,11 @@ configuration and restart Home Assistant.
 port of the IR head. The meter is read once during setup to identify it.
 
 The polling interval defaults to 15 minutes and can be changed in the integration options
-(2 to 1440 minutes). Readouts take place one minute before the end of each interval,
-counted from midnight: with 60 minutes at hh:59, with 15 minutes at hh:14, hh:29, hh:44 and
-hh:59. The consumption of an hour then ends up in that hour of the statistics instead of
-being split between two.
+(2 to 1440 minutes). Readouts start three minutes before the end of each interval,
+counted from midnight: with 60 minutes at hh:57, with 15 minutes at hh:12, hh:27, hh:42 and
+hh:57. The consumption of an hour then ends up in that hour of the statistics instead of
+being split between two. If the meter does not answer, the integration asks for the meter
+state a minute later and reads again, still before the end of the interval.
 
 ## Entities
 
@@ -152,6 +153,13 @@ The optical port is a half-duplex serial line at **2400 baud, 8 data bits, even 
    `E5`) before the next readout, so that the meter sends only the first frame, which is
    the factory default. For the history import it switches the rolling frame on (sub-code
    `00`) for one readout and off again afterwards (Landis+Gyr TKB3462, section 5.1).
+4. A T230 sometimes ignores the data request, apparently after a while without
+   communication. The Landis+Gyr software and scripts that read these meters reliably first
+   send *Get meter state* (`68 05 05 68 53 FE 51 0F 0F C0 16`), which the meter answers with
+   its operating mode and firmware versions as text (`Nb+7.21…`) without changing anything
+   (TKB3462, section 2). The integration sends it when a scheduled readout stays
+   unanswered and then reads again. The diagnostics count how often the meter answered
+   directly and how often only after the state request.
 
 Records are decoded according to EN 13757-3 (DIF/DIFE for storage, tariff and function, VIF
 for quantity and scaling, BCD, binary, float and variable length data fields, plain text VIFs). Records whose VIF is followed by a

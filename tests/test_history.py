@@ -89,7 +89,11 @@ async def test_history_imported_after_setup(
     until = datetime(2026, 9, 30, 17, tzinfo=dt_util.UTC).timestamp()
     assert config_entry.data["history_imported"] is True
     assert config_entry.data["history_until"] == {"heat_energy": until, "volume": until}
-    assert read_meter.call_args_list[-1].kwargs == {"all_telegrams": True, "first_only": False}
+    assert read_meter.call_args_list[-1].kwargs == {
+        "all_telegrams": True,
+        "first_only": False,
+        "status_first": False,
+    }
 
 
 async def test_import_replaces_imported_values_only(

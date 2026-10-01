@@ -103,18 +103,18 @@ async def test_sensor_added_when_value_appears(
 @pytest.mark.parametrize(
     ("now", "interval", "expected"),
     [
-        ("10:20:00", 60, "10:59:00"),
-        ("10:58:59", 60, "10:59:00"),
-        ("10:59:00", 60, "11:59:00"),
-        ("10:59:30", 60, "11:59:00"),
-        ("10:13:00", 15, "10:14:00"),
-        ("10:14:30", 15, "10:29:00"),
-        ("23:59:30", 15, "00:14:00"),
-        ("05:00:00", 360, "05:59:00"),
+        ("10:20:00", 60, "10:57:00"),
+        ("10:56:59", 60, "10:57:00"),
+        ("10:57:00", 60, "11:57:00"),
+        ("10:59:30", 60, "11:57:00"),
+        ("10:11:00", 15, "10:12:00"),
+        ("10:12:30", 15, "10:27:00"),
+        ("23:59:30", 15, "00:12:00"),
+        ("05:00:00", 360, "05:57:00"),
     ],
 )
 def test_next_poll(now: str, interval: int, expected: str) -> None:
-    """Readouts end one minute before the interval boundaries of the day."""
+    """Polls start three minutes before the interval boundaries of the day."""
     day = datetime(2026, 10, 1, tzinfo=dt_util.get_time_zone("Europe/Berlin"))
     hour, minute, second = map(int, now.split(":"))
     result = next_poll(day.replace(hour=hour, minute=minute, second=second), interval)
@@ -137,6 +137,50 @@ def test_next_poll_daylight_saving(day: datetime, interval: int) -> None:
         now = next_poll(now, interval).astimezone(dt_util.UTC).astimezone(tz)
         polls.append(now.timestamp())
     assert {b - a for a, b in itertools.pairwise(polls)} == {interval * 60}
+
+
+async def test_poll_asks_for_meter_state_when_silent(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    read_meter: MagicMock,
+    reading: MeterReading,
+) -> None:
+    """A silent meter is asked for its state and read again, and that is counted."""
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    read_meter.side_effect = [NoResponseError("only the echo"), reading]
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=16))
+    await hass.async_block_till_done()
+
+    coordinator = config_entry.runtime_data
+    assert coordinator.last_update_success
+    assert read_meter.call_args_list[-2].kwargs["status_first"] is False
+    assert read_meter.call_args_list[-1].kwargs["status_first"] is True
+    assert coordinator.counts["no_answer_directly"] == 1
+    assert coordinator.counts["answered_after_state_request"] == 1
+    assert coordinator.failures_in_a_row == 0
+    assert hass.states.get("sensor.heat_meter_12345678_heat_energy").state == "143"
+
+
+async def test_poll_fails_when_silent_twice(
+    hass: HomeAssistant, config_entry: MockConfigEntry, read_meter: MagicMock
+) -> None:
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    read_meter.side_effect = NoResponseError("only the echo")
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=16))
+    await hass.async_block_till_done()
+
+    coordinator = config_entry.runtime_data
+    assert not coordinator.last_update_success
+    assert coordinator.counts["no_answer_after_state_request"] == 1
+    assert coordinator.failures_in_a_row == 1
+    state = hass.states.get("sensor.heat_meter_12345678_heat_energy")
+    assert state.state == STATE_UNAVAILABLE
 
 
 async def test_other_meter_on_port(

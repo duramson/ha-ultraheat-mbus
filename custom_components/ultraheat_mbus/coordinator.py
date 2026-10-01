@@ -25,7 +25,11 @@ from .const import (
     DOMAIN,
     READ_TIMEOUT,
 )
-from .mbus import MIN_READ_INTERVAL, MbusError, MeterReading, read_meter
+from .mbus import MIN_READ_INTERVAL, MbusError, MeterReading, NoResponseError, read_meter
+
+# Minutes before an interval boundary at which a poll starts. If the meter does not
+# answer, a second attempt follows a minute later and still ends before the boundary.
+POLL_LEAD = 3
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,10 +54,10 @@ def _port_state(hass: HomeAssistant, port: str) -> _PortState:
 
 
 def next_poll(now: datetime, interval: int) -> datetime:
-    """Return when to poll next: one minute before the end of an interval.
+    """Return when to poll next: POLL_LEAD minutes before the end of an interval.
 
     Intervals are counted from local midnight, so with 60 minutes the meter is read at
-    hh:59 and with 15 minutes at hh:14, hh:29, hh:44 and hh:59. The consumption of an
+    hh:57 and with 15 minutes at hh:12, hh:27, hh:42 and hh:57. The consumption of an
     hour then lands in that hour of the statistics instead of being split between two.
     """
     # Boundaries are wall clock times. Around a change of daylight saving time the
@@ -61,11 +65,11 @@ def next_poll(now: datetime, interval: int) -> datetime:
     # same time an hour later (fold 0), and the repeated hour has every time twice
     # (fold 0 and 1). So the candidates cover an hour on either side, and the
     # earliest one that is really still ahead wins.
-    minute = now.hour * 60 + now.minute + 1
+    minute = now.hour * 60 + now.minute + POLL_LEAD
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     first = max((minute - 60) // interval * interval, interval)
     candidates = (
-        (midnight + timedelta(minutes=boundary - 1)).replace(fold=fold)
+        (midnight + timedelta(minutes=boundary - POLL_LEAD)).replace(fold=fold)
         for boundary in range(first, minute + interval + 61, interval)
         for fold in (0, 1)
     )
@@ -81,7 +85,12 @@ def _canonical_port(port: str) -> str:
 
 
 async def async_read_meter(
-    hass: HomeAssistant, port: str, *, all_telegrams: bool = False, reuse_recent: bool = True
+    hass: HomeAssistant,
+    port: str,
+    *,
+    all_telegrams: bool = False,
+    reuse_recent: bool = True,
+    status_first: bool = False,
 ) -> MeterReading:
     """Read the meter, serialised per port and at most once per minute.
 
@@ -115,6 +124,7 @@ async def async_read_meter(
                 port,
                 all_telegrams=all_telegrams,
                 first_only=not all_telegrams and state.rolling_frame is True,
+                status_first=status_first,
             )
         )
     except BaseException:
@@ -163,6 +173,16 @@ class UltraheatCoordinator(DataUpdateCoordinator[MeterReading]):
         self.interval: int = config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
         self._unsub_poll: CALLBACK_TYPE | None = None
         self._polling = False
+        # How the meter answers, for the diagnostics: since when it answers or not.
+        self.last_answer: datetime | None = None
+        self.failures_in_a_row = 0
+        self.counts: dict[str, int] = {
+            "answered_directly": 0,
+            "no_answer_directly": 0,
+            "answered_after_state_request": 0,
+            "no_answer_after_state_request": 0,
+            "other_errors": 0,
+        }
 
     @callback
     def async_start_polling(self) -> None:
@@ -190,15 +210,21 @@ class UltraheatCoordinator(DataUpdateCoordinator[MeterReading]):
 
     async def _async_update_data(self) -> MeterReading:
         """Fetch the current values from the meter."""
+        since = (
+            f"{(dt_util.utcnow() - self.last_answer).total_seconds() / 60:.0f} min"
+            if self.last_answer
+            else "no answer yet"
+        )
         try:
-            # Only the readout during setup may reuse the one of the config flow. A
-            # scheduled poll closes an interval, so it waits for the minute between
-            # readouts if necessary: it starts a minute before the boundary.
-            reading = await async_read_meter(
-                self.hass, self.port, reuse_recent=not self._polling
-            )
+            reading, how = await self._async_read()
         except (MbusError, OSError, TimeoutError, serialx.SerialException) as err:
+            self.failures_in_a_row += 1
+            _LOGGER.debug(
+                "No readout, %d in a row, previous answer: %s", self.failures_in_a_row, since
+            )
             raise UpdateFailed(f"Error reading heat meter on {self.port}: {err}") from err
+        self.last_answer = dt_util.utcnow()
+        self.failures_in_a_row = 0
         if reading.identification != self.config_entry.unique_id:
             # Another meter answers on this port (meter replaced or head moved). Its
             # values must not continue the statistics of the configured meter.
@@ -213,9 +239,52 @@ class UltraheatCoordinator(DataUpdateCoordinator[MeterReading]):
             )
         # The access number counts every telegram the meter sends, also unread ones.
         _LOGGER.debug(
-            "%d telegrams received, access number %s, rolling frame %s",
+            "Answered %s, previous answer: %s; %d telegrams received, access number %s,"
+            " rolling frame %s, meter state %s",
+            how,
+            since,
             reading.frames,
             reading.access_number,
             reading.rolling_frame_optical,
+            reading.meter_state,
         )
         return reading
+
+    async def _async_read(self) -> tuple[MeterReading, str]:
+        """Read the meter; a poll asks for the meter state and tries again if silent.
+
+        Some T230 ignore the data request after a while without communication. The
+        Landis+Gyr software asks for the meter state first. Asking only after a silent
+        first attempt shows in the counts whether that makes the difference. During
+        setup there is a single attempt, so that a silent meter does not delay it.
+        """
+        try:
+            # Only the readout during setup may reuse the one of the config flow. A
+            # scheduled poll closes an interval, so it reads the meter again.
+            reading = await async_read_meter(
+                self.hass, self.port, reuse_recent=not self._polling
+            )
+        except NoResponseError as err:
+            self.counts["no_answer_directly"] += 1
+            if not self._polling:
+                raise
+            _LOGGER.debug("No answer (%s); asking for the meter state, then again", err)
+        except (MbusError, OSError, TimeoutError, serialx.SerialException):
+            self.counts["other_errors"] += 1
+            raise
+        else:
+            self.counts["answered_directly"] += 1
+            return reading, "directly"
+        try:
+            # Waits for the minute between readouts.
+            reading = await async_read_meter(
+                self.hass, self.port, reuse_recent=False, status_first=True
+            )
+        except NoResponseError:
+            self.counts["no_answer_after_state_request"] += 1
+            raise
+        except (MbusError, OSError, TimeoutError, serialx.SerialException):
+            self.counts["other_errors"] += 1
+            raise
+        self.counts["answered_after_state_request"] += 1
+        return reading, "after the meter state request"

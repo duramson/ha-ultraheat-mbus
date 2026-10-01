@@ -47,15 +47,29 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: UltraheatConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
-    reading = entry.runtime_data.data
+    coordinator = entry.runtime_data
+    reading = coordinator.data
     diagnostics: dict[str, Any] = {
         "port": _REDACTED if entry.data.get(CONF_DEVICE) else None,
         "options": dict(entry.options),
+        # The reading below is the last successful one, possibly from much earlier.
+        "communication": {
+            "last_update_success": coordinator.last_update_success,
+            "last_error": (
+                None if coordinator.last_update_success else str(coordinator.last_exception)
+            ),
+            "last_answer": coordinator.last_answer.isoformat()
+            if coordinator.last_answer
+            else None,
+            "failures_in_a_row": coordinator.failures_in_a_row,
+            "counts": dict(coordinator.counts),
+        },
     }
     if reading is None:  # no answer since the start
         return diagnostics
     return diagnostics | {
         "reading": {
+            "meter_state": reading.meter_state,
             "manufacturer": reading.manufacturer,
             "version": reading.version,
             "medium": reading.medium,
