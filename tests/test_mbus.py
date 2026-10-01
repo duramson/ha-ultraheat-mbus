@@ -282,10 +282,18 @@ def test_application_reset_frames() -> None:
     assert mbus.APP_RESET_ALL.hex(" ") == "68 04 04 68 53 fe 50 00 a1 16"
 
 
-def test_read_raw_all_telegrams(fake_port, stream: bytes) -> None:
+def test_read_raw_until_idle(fake_port, stream: bytes) -> None:
+    """All frames are received, also when only the first one was expected."""
     frames = mbus.extract_long_frames(stream)
     fake_port([(0.0, ECHO), *((1.2 + 0.3 * i, f) for i, f in enumerate(frames))])
-    assert len(mbus.extract_long_frames(mbus.read_raw("/dev/null", all_telegrams=True))) == 7
+    assert mbus.parse_readout(mbus.read_raw("/dev/null")).frames == 7
+
+
+def test_read_raw_single_frame_ends_when_idle(fake_port, stream: bytes) -> None:
+    frame = mbus.extract_long_frames(stream)[0]
+    clock = fake_port([(0.0, ECHO), (1.2, frame)])
+    assert mbus.parse_readout(mbus.read_raw("/dev/null")).frames == 1
+    assert clock.now < 6.0
 
 
 def test_all_frames_decode(stream: bytes) -> None:

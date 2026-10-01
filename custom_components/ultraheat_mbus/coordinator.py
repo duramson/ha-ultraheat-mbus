@@ -23,7 +23,6 @@ from .const import (
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
-    READ_ALL_TIMEOUT,
     READ_TIMEOUT,
 )
 from .mbus import MIN_READ_INTERVAL, MbusError, MeterReading, read_meter
@@ -116,13 +115,15 @@ async def async_read_meter(
         if all_telegrams:
             # Switched on for this readout; whether switching it off worked is unknown.
             state.rolling_frame = True
-        elif state.last_reading is not None:
-            state.rolling_frame = state.last_reading.rolling_frame_optical
+        elif (reading := state.last_reading) is not None:
+            # The flag in the first telegram, or simply what arrived.
+            state.rolling_frame = bool(reading.rolling_frame_optical) or (
+                reading.manufacturer == "LUG" and reading.frames > 1
+            )
         state.lock.release()
 
     job.add_done_callback(_release)
-    timeout = READ_ALL_TIMEOUT if all_telegrams else READ_TIMEOUT
-    async with asyncio.timeout(timeout.total_seconds()):
+    async with asyncio.timeout(READ_TIMEOUT.total_seconds()):
         return await asyncio.shield(job)
 
 
@@ -191,7 +192,8 @@ class UltraheatCoordinator(DataUpdateCoordinator[MeterReading]):
             )
         # The access number counts every telegram the meter sends, also unread ones.
         _LOGGER.debug(
-            "Access number %d, rolling frame %s",
+            "%d telegrams received, access number %d, rolling frame %s",
+            reading.frames,
             reading.telegrams[0].access_number,
             reading.rolling_frame_optical,
         )

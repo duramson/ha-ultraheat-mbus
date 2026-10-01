@@ -12,5 +12,6 @@ DEFAULT_SCAN_INTERVAL = 15  # minutes
 MIN_SCAN_INTERVAL = 2  # minutes; at least one minute has to pass between readouts
 MAX_SCAN_INTERVAL = 1440  # minutes
 
-READ_TIMEOUT = timedelta(seconds=30)
-READ_ALL_TIMEOUT = timedelta(seconds=90)  # all telegrams take about 20 s
+# Up to three wake-ups (switching the rolling frame on and off around a readout) and
+# a readout of all telegrams, which takes about 20 s.
+READ_TIMEOUT = timedelta(seconds=90)

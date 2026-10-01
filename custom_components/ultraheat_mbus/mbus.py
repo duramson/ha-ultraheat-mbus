@@ -201,6 +201,11 @@ class MeterReading:
     def manufacturer_name(self) -> str:
         return MANUFACTURERS.get(self.manufacturer, self.manufacturer)
 
+    @property
+    def frames(self) -> int:
+        """Return the number of telegrams received, undecodable ones included."""
+        return len(self.telegrams) + len(self.undecoded)
+
 
 # --------------------------------------------------------------------------- framing
 
@@ -710,19 +715,16 @@ def read_raw(
     *,
     first_byte_timeout: float = 3.0,
     idle_timeout: float = 0.5,
-    max_duration: float | None = None,
-    all_telegrams: bool = False,
+    max_duration: float = 60.0,
     request: bytes = REQ_UD2,
 ) -> bytes:
     """Wake the meter, send ``request`` and return the raw bytes received.
 
-    By default reading stops as soon as a complete telegram with the current values
-    has arrived, at the latest after 10 s. With ``all_telegrams`` it continues until
-    the line is idle, at the latest after 60 s; a T230 sends about 4 KB of storage
-    telegrams (28 telegrams, about 20 s at 2400 baud).
+    Reading continues until the line is idle, so whatever the meter sends is received
+    and the parser decides what it was: a single telegram with the current values,
+    all 28 telegrams of a T230 with the rolling frame on (about 4 KB or 20 s at
+    2400 baud), or the acknowledgement of a command.
     """
-    if max_duration is None:
-        max_duration = 60.0 if all_telegrams else 10.0
     import serialx  # pylint: disable=import-outside-toplevel
 
     with serialx.serial_for_url(
@@ -756,8 +758,6 @@ def read_raw(
                     # (optical heads often see their own transmitter).
                     received = meter_data
                     last_data = now
-                    if request == REQ_UD2 and not all_telegrams and _has_current_values(buffer):
-                        break
             elif now < first_byte_deadline:
                 # Give the meter the full time to answer. Stray bytes before the
                 # answer must not start the idle timeout early.
@@ -779,14 +779,6 @@ def _strip_echo(buffer: bytes | bytearray, request: bytes = REQ_UD2) -> bytes:
     if data.startswith(request):
         data = data[len(request) :]
     return data.lstrip(b"\x00")
-
-
-def _has_current_values(buffer: bytearray) -> bool:
-    try:
-        parse_readout(bytes(buffer))
-    except MbusError:
-        return False
-    return True
 
 
 def send_command(port: str, command: bytes) -> None:
@@ -828,7 +820,7 @@ def read_raw_all_telegrams(port: str) -> bytes:
     except NoResponseError:
         pass  # meters without the command may send all telegrams anyway
     try:
-        return read_raw(port, all_telegrams=True)
+        return read_raw(port)
     finally:
         try:
             send_command(port, APP_RESET_FIRST_ONLY)

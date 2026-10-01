@@ -179,12 +179,36 @@ async def test_rolling_frame_is_switched_off_after_all_telegrams(
     hass: HomeAssistant, read_meter: MagicMock, reading: MeterReading
 ) -> None:
     """Switching the rolling frame off after the history readout may have failed."""
-    read_meter.return_value = replace(reading, rolling_frame_optical=False)
+    read_meter.return_value = replace(
+        reading, telegrams=reading.telegrams[:1], rolling_frame_optical=False
+    )
     await async_read_meter(hass, "/dev/ttyUSB-test")
     await async_read_meter(hass, "/dev/ttyUSB-test", all_telegrams=True)
     await async_read_meter(hass, "/dev/ttyUSB-test")
     assert read_meter.call_args_list[0].kwargs["first_only"] is False
     assert read_meter.call_args_list[2].kwargs["first_only"] is True
+
+
+@pytest.mark.parametrize(
+    ("manufacturer", "first_only"), [("LUG", True), ("QDS", False)]
+)
+async def test_rolling_frame_seen_in_the_frames(
+    hass: HomeAssistant,
+    read_meter: MagicMock,
+    reading: MeterReading,
+    manufacturer: str,
+    first_only: bool,
+) -> None:
+    """More than one telegram arrived: the rolling frame is on, whatever the flag says.
+
+    Only a Landis+Gyr meter is switched, others do not know the command.
+    """
+    read_meter.return_value = replace(
+        reading, manufacturer=manufacturer, rolling_frame_optical=None
+    )
+    await async_read_meter(hass, "/dev/ttyUSB-test")
+    await async_read_meter(hass, "/dev/ttyUSB-test")
+    assert read_meter.call_args_list[1].kwargs["first_only"] is first_only
 
 
 def test_port_aliases_share_state(tmp_path: Path) -> None:

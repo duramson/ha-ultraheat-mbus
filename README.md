@@ -143,8 +143,9 @@ The optical port is a half-duplex serial line at **2400 baud, 8 data bits, even 
 3. The meter answers with an `RSP_UD` long frame (`68 L L 68 …  CS 16`, CI `0x72`) with the
    current values. If the *rolling frame* of the optical interface is switched on, a T230
    follows it on its own with 27 frames of due-date and monthly storage values, about 3.8 KB
-   or 20 seconds of transmitting, even when nobody reads them. The manufacturer specific
-   bytes at the end of each frame tell whether it is on. In that case the integration sends
+   or 20 seconds of transmitting, even when nobody reads them. The integration always reads
+   until the line is idle, so it notices this by the number of frames, and the manufacturer
+   specific bytes at the end of each frame also tell whether it is on. In that case it sends
    an application reset without sub-code (`68 03 03 68 53 FE 50 A1 16`, acknowledged with
    `E5`) before the next readout, so that the meter sends only the first frame, which is
    the factory default. For the history import it switches the rolling frame on (sub-code
