@@ -808,18 +808,29 @@ def read_meter(
     With ``all_telegrams`` the meter is switched to sending all telegrams for this one
     readout and back to the first telegram afterwards.
     """
-    if not all_telegrams:
-        if first_only:
+    if all_telegrams:
+        return parse_readout(read_raw_all_telegrams(port))
+    if first_only:
+        try:
             send_command(port, APP_RESET_FIRST_ONLY)
-        return parse_readout(read_raw(port))
+        except NoResponseError:
+            pass  # read anyway: the request is answered either way, only with more frames
+    return parse_readout(read_raw(port))
+
+
+def read_raw_all_telegrams(port: str) -> bytes:
+    """Return the raw bytes of a readout with all telegrams (storage values included).
+
+    The rolling frame is switched on for this one readout and off again afterwards.
+    """
     try:
         send_command(port, APP_RESET_ALL)
     except NoResponseError:
         pass  # meters without the command may send all telegrams anyway
     try:
-        return parse_readout(read_raw(port, all_telegrams=True))
+        return read_raw(port, all_telegrams=True)
     finally:
         try:
             send_command(port, APP_RESET_FIRST_ONLY)
         except (MbusError, OSError):
-            pass  # the next readout switches it back if necessary
+            pass  # the next readout tries again, see async_read_meter

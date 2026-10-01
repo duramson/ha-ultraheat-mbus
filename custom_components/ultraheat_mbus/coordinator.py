@@ -113,7 +113,10 @@ async def async_read_meter(
         state.last_reading = (
             job.result() if not job.cancelled() and job.exception() is None else None
         )
-        if state.last_reading is not None and not all_telegrams:
+        if all_telegrams:
+            # Switched on for this readout; whether switching it off worked is unknown.
+            state.rolling_frame = True
+        elif state.last_reading is not None:
             state.rolling_frame = state.last_reading.rolling_frame_optical
         state.lock.release()
 

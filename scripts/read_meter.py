@@ -30,7 +30,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        raw = mbus.read_raw(args.port, all_telegrams=args.all)
+        raw = mbus.read_raw_all_telegrams(args.port) if args.all else mbus.read_raw(args.port)
     except (OSError, serialx.SerialException) as err:
         print(f"error: cannot use {args.port}: {err}", file=sys.stderr)
         return 1

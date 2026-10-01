@@ -257,6 +257,18 @@ def test_read_meter_switches_to_first_telegram(meter: list[bytes]) -> None:
     assert meter == [mbus.APP_RESET_FIRST_ONLY, mbus.REQ_UD2]
 
 
+def test_read_meter_without_acknowledgement(
+    monkeypatch: pytest.MonkeyPatch, stream: bytes
+) -> None:
+    """A switch to the first telegram that is not acknowledged does not stop the readout."""
+
+    def read_raw(port: str, *, request: bytes = mbus.REQ_UD2, **kwargs: object) -> bytes:
+        return stream if request == mbus.REQ_UD2 else request
+
+    monkeypatch.setattr(mbus, "read_raw", read_raw)
+    assert mbus.read_meter("/dev/null", first_only=True).heat_energy is not None
+
+
 def test_read_all_telegrams_switches_rolling_frame(meter: list[bytes]) -> None:
     """All telegrams are only sent with the rolling frame on, so it is switched on and off."""
     reading = mbus.read_meter("/dev/null", all_telegrams=True)
