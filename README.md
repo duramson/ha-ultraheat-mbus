@@ -153,13 +153,15 @@ The optical port is a half-duplex serial line at **2400 baud, 8 data bits, even 
    `E5`) before the next readout, so that the meter sends only the first frame, which is
    the factory default. For the history import it switches the rolling frame on (sub-code
    `00`) for one readout and off again afterwards (Landis+Gyr TKB3462, section 5.1).
-4. A T230 sometimes ignores the data request, apparently after a while without
-   communication. The Landis+Gyr software and scripts that read these meters reliably first
-   send *Get meter state* (`68 05 05 68 53 FE 51 0F 0F C0 16`), which the meter answers with
-   its operating mode and firmware versions as text (`Nb+7.21…`) without changing anything
-   (TKB3462, section 2). The integration sends it when a scheduled readout stays
-   unanswered and then reads again. The diagnostics count how often the meter answered
-   directly and how often only after the state request.
+4. After a while without communication a T230 answers neither the data request nor the
+   first *Get meter state* (`68 05 05 68 53 FE 51 0F 0F C0 16`), which it otherwise answers
+   with its operating mode and firmware versions as text (`Nb+7.21…`) without changing
+   anything (TKB3462, section 2). So every readout starts with the state request (step 1
+   and 2 with this frame instead of `REQ_UD2`) and repeats it up to ten times, one second
+   after each silent attempt, as scripts that read T330 meters for years do. Once the meter
+   has answered, the data request follows and is sent up to three times in a row, as the
+   Landis+Gyr service software does. Meters that never answer the state request are read
+   all the same. The diagnostics count how many state and data requests each readout took.
 
 Records are decoded according to EN 13757-3 (DIF/DIFE for storage, tariff and function, VIF
 for quantity and scaling, BCD, binary, float and variable length data fields, plain text VIFs). Records whose VIF is followed by a

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import partial
@@ -27,8 +28,9 @@ from .const import (
 )
 from .mbus import MIN_READ_INTERVAL, MbusError, MeterReading, NoResponseError, read_meter
 
-# Minutes before an interval boundary at which a poll starts. If the meter does not
-# answer, a second attempt follows a minute later and still ends before the boundary.
+# Minutes before an interval boundary at which a poll starts. Waking a silent meter and
+# repeating the data request takes up to about a minute; the readout still ends before
+# the boundary.
 POLL_LEAD = 3
 
 _LOGGER = logging.getLogger(__name__)
@@ -90,7 +92,6 @@ async def async_read_meter(
     *,
     all_telegrams: bool = False,
     reuse_recent: bool = True,
-    status_first: bool = False,
 ) -> MeterReading:
     """Read the meter, serialised per port and at most once per minute.
 
@@ -124,7 +125,6 @@ async def async_read_meter(
                 port,
                 all_telegrams=all_telegrams,
                 first_only=not all_telegrams and state.rolling_frame is True,
-                status_first=status_first,
             )
         )
     except BaseException:
@@ -176,13 +176,11 @@ class UltraheatCoordinator(DataUpdateCoordinator[MeterReading]):
         # How the meter answers, for the diagnostics: since when it answers or not.
         self.last_answer: datetime | None = None
         self.failures_in_a_row = 0
-        self.counts: dict[str, int] = {
-            "answered_directly": 0,
-            "no_answer_directly": 0,
-            "answered_after_state_request": 0,
-            "no_answer_after_state_request": 0,
-            "other_errors": 0,
-        }
+        self.counts: dict[str, int] = {"answered": 0, "no_answer": 0, "other_errors": 0}
+        # State requests until the meter answered ("never" if it did not), and data
+        # requests until it answered, per readout.
+        self.wake_attempts: Counter[str] = Counter()
+        self.read_attempts: Counter[str] = Counter()
 
     @callback
     def async_start_polling(self) -> None:
@@ -216,13 +214,23 @@ class UltraheatCoordinator(DataUpdateCoordinator[MeterReading]):
             else "no answer yet"
         )
         try:
-            reading, how = await self._async_read()
-        except (MbusError, OSError, TimeoutError, serialx.SerialException) as err:
-            self.failures_in_a_row += 1
-            _LOGGER.debug(
-                "No readout, %d in a row, previous answer: %s", self.failures_in_a_row, since
+            # Only the readout during setup may reuse the one of the config flow. A
+            # scheduled poll closes an interval, so it reads the meter again.
+            reading = await async_read_meter(
+                self.hass, self.port, reuse_recent=not self._polling
             )
+        except NoResponseError as err:
+            self.counts["no_answer"] += 1
+            self.wake_attempts[str(err.wake_attempts or "never")] += 1
+            self._log_failure(since)
             raise UpdateFailed(f"Error reading heat meter on {self.port}: {err}") from err
+        except (MbusError, OSError, TimeoutError, serialx.SerialException) as err:
+            self.counts["other_errors"] += 1
+            self._log_failure(since)
+            raise UpdateFailed(f"Error reading heat meter on {self.port}: {err}") from err
+        self.counts["answered"] += 1
+        self.wake_attempts[str(reading.wake_attempts or "never")] += 1
+        self.read_attempts[str(reading.read_attempts)] += 1
         self.last_answer = dt_util.utcnow()
         self.failures_in_a_row = 0
         if reading.identification != self.config_entry.unique_id:
@@ -239,9 +247,10 @@ class UltraheatCoordinator(DataUpdateCoordinator[MeterReading]):
             )
         # The access number counts every telegram the meter sends, also unread ones.
         _LOGGER.debug(
-            "Answered %s, previous answer: %s; %d telegrams received, access number %s,"
-            " rolling frame %s, meter state %s",
-            how,
+            "Answered after %s state and %d data requests, previous answer: %s;"
+            " %d telegrams received, access number %s, rolling frame %s, meter state %s",
+            reading.wake_attempts or "unanswered",
+            reading.read_attempts,
             since,
             reading.frames,
             reading.access_number,
@@ -250,41 +259,8 @@ class UltraheatCoordinator(DataUpdateCoordinator[MeterReading]):
         )
         return reading
 
-    async def _async_read(self) -> tuple[MeterReading, str]:
-        """Read the meter; a poll asks for the meter state and tries again if silent.
-
-        Some T230 ignore the data request after a while without communication. The
-        Landis+Gyr software asks for the meter state first. Asking only after a silent
-        first attempt shows in the counts whether that makes the difference. During
-        setup there is a single attempt, so that a silent meter does not delay it.
-        """
-        try:
-            # Only the readout during setup may reuse the one of the config flow. A
-            # scheduled poll closes an interval, so it reads the meter again.
-            reading = await async_read_meter(
-                self.hass, self.port, reuse_recent=not self._polling
-            )
-        except NoResponseError as err:
-            self.counts["no_answer_directly"] += 1
-            if not self._polling:
-                raise
-            _LOGGER.debug("No answer (%s); asking for the meter state, then again", err)
-        except (MbusError, OSError, TimeoutError, serialx.SerialException):
-            self.counts["other_errors"] += 1
-            raise
-        else:
-            self.counts["answered_directly"] += 1
-            return reading, "directly"
-        try:
-            # Waits for the minute between readouts.
-            reading = await async_read_meter(
-                self.hass, self.port, reuse_recent=False, status_first=True
-            )
-        except NoResponseError:
-            self.counts["no_answer_after_state_request"] += 1
-            raise
-        except (MbusError, OSError, TimeoutError, serialx.SerialException):
-            self.counts["other_errors"] += 1
-            raise
-        self.counts["answered_after_state_request"] += 1
-        return reading, "after the meter state request"
+    def _log_failure(self, since: str) -> None:
+        self.failures_in_a_row += 1
+        _LOGGER.debug(
+            "No readout, %d in a row, previous answer: %s", self.failures_in_a_row, since
+        )

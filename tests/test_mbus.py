@@ -260,35 +260,108 @@ def test_request_status_without_answer(fake_port) -> None:
         mbus.request_status("/dev/null")
 
 
-@pytest.fixture(name="meter")
-def meter_fixture(monkeypatch: pytest.MonkeyPatch, stream: bytes) -> list[bytes]:
-    """Answer commands with an acknowledgement and requests with the recorded readout."""
+@pytest.fixture(name="sleeps", autouse=True)
+def sleeps_fixture(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record the pauses between attempts instead of waiting."""
+    sleeps: list[float] = []
+    monkeypatch.setattr(mbus.time, "sleep", sleeps.append)
+    return sleeps
+
+
+def _scripted_meter(
+    monkeypatch: pytest.MonkeyPatch, stream: bytes, *, silent_states: int = 0,
+    silent_reads: int = 0,
+) -> list[bytes]:
+    """Stay silent to the first state and data requests, then answer."""
     sent: list[bytes] = []
 
     def read_raw(port: str, *, request: bytes = mbus.REQ_UD2, **kwargs: object) -> bytes:
         sent.append(request)
+        echo = mbus.PREAMBLE + request
         if request == mbus.STATUS_REQUEST:
-            return request + STATUS_ANSWER
-        return stream if request == mbus.REQ_UD2 else request + bytes([mbus.ACK])
+            silent = sent.count(request) <= silent_states
+            return echo if silent else echo + STATUS_ANSWER
+        if request == mbus.REQ_UD2:
+            return echo if sent.count(request) <= silent_reads else stream
+        return echo + bytes([mbus.ACK])
 
     monkeypatch.setattr(mbus, "read_raw", read_raw)
     return sent
 
 
-def test_read_meter_sends_only_the_request(meter: list[bytes]) -> None:
-    mbus.read_meter("/dev/null")
-    assert meter == [mbus.REQ_UD2]
+@pytest.fixture(name="meter")
+def meter_fixture(monkeypatch: pytest.MonkeyPatch, stream: bytes) -> list[bytes]:
+    """Answer commands with an acknowledgement and requests with the recorded readout."""
+    return _scripted_meter(monkeypatch, stream)
 
 
-def test_read_meter_asks_for_state_first(meter: list[bytes]) -> None:
-    reading = mbus.read_meter("/dev/null", status_first=True)
+def test_read_meter_asks_for_state_first(meter: list[bytes], sleeps: list[float]) -> None:
+    reading = mbus.read_meter("/dev/null")
     assert meter == [mbus.STATUS_REQUEST, mbus.REQ_UD2]
     assert reading.meter_state == "Nb+7.217.21F"
+    assert (reading.wake_attempts, reading.read_attempts) == (1, 1)
+    assert sleeps == []
+
+
+def test_wake_repeats_state_request(
+    monkeypatch: pytest.MonkeyPatch, stream: bytes, sleeps: list[float]
+) -> None:
+    """A sleeping meter is asked for its state again after a short pause."""
+    sent = _scripted_meter(monkeypatch, stream, silent_states=2)
+    reading = mbus.read_meter("/dev/null")
+    assert sent == [mbus.STATUS_REQUEST] * 3 + [mbus.REQ_UD2]
+    assert reading.wake_attempts == 3
+    assert reading.meter_state == "Nb+7.217.21F"
+    assert sleeps == [mbus.WAKE_PAUSE] * 2
+
+
+def test_data_request_without_state_answer(
+    monkeypatch: pytest.MonkeyPatch, stream: bytes, sleeps: list[float]
+) -> None:
+    """Meters that never answer the state request are still read."""
+    sent = _scripted_meter(monkeypatch, stream, silent_states=mbus.WAKE_ATTEMPTS)
+    reading = mbus.read_meter("/dev/null")
+    assert sent == [mbus.STATUS_REQUEST] * mbus.WAKE_ATTEMPTS + [mbus.REQ_UD2]
+    assert reading.heat_energy == 143
+    assert (reading.meter_state, reading.wake_attempts) == (None, None)
+    assert len(sleeps) == mbus.WAKE_ATTEMPTS - 1
+
+
+def test_data_request_repeated_without_pause(
+    monkeypatch: pytest.MonkeyPatch, stream: bytes, sleeps: list[float]
+) -> None:
+    sent = _scripted_meter(monkeypatch, stream, silent_reads=2)
+    reading = mbus.read_meter("/dev/null")
+    assert sent == [mbus.STATUS_REQUEST] + [mbus.REQ_UD2] * 3
+    assert reading.read_attempts == 3
+    assert sleeps == []
+
+
+@pytest.mark.parametrize("silent_states", [0, mbus.WAKE_ATTEMPTS])
+def test_failed_readout_reports_state_outcome(
+    monkeypatch: pytest.MonkeyPatch, stream: bytes, silent_states: int
+) -> None:
+    """A failed readout says whether the meter answered the state request."""
+    sent = _scripted_meter(
+        monkeypatch, stream, silent_states=silent_states, silent_reads=mbus.READ_ATTEMPTS
+    )
+    with pytest.raises(mbus.NoResponseError) as raised:
+        mbus.read_meter("/dev/null")
+    assert sent.count(mbus.REQ_UD2) == mbus.READ_ATTEMPTS
+    message = str(raised.value)
+    assert message.startswith("the meter did not answer, only the echo")
+    if silent_states:
+        assert raised.value.wake_attempts is None
+        assert "meter state request unanswered: the meter did not answer" in message
+        assert f"({mbus.WAKE_ATTEMPTS} attempts)" in message
+    else:
+        assert raised.value.wake_attempts == 1
+        assert "meter state 'Nb+7.217.21F' answered after 1 attempts" in message
 
 
 def test_read_meter_switches_to_first_telegram(meter: list[bytes]) -> None:
     mbus.read_meter("/dev/null", first_only=True)
-    assert meter == [mbus.APP_RESET_FIRST_ONLY, mbus.REQ_UD2]
+    assert meter == [mbus.STATUS_REQUEST, mbus.APP_RESET_FIRST_ONLY, mbus.REQ_UD2]
 
 
 def test_read_meter_without_acknowledgement(
@@ -306,8 +379,14 @@ def test_read_meter_without_acknowledgement(
 def test_read_all_telegrams_switches_rolling_frame(meter: list[bytes]) -> None:
     """All telegrams are only sent with the rolling frame on, so it is switched on and off."""
     reading = mbus.read_meter("/dev/null", all_telegrams=True)
-    assert meter == [mbus.APP_RESET_ALL, mbus.REQ_UD2, mbus.APP_RESET_FIRST_ONLY]
+    assert meter == [
+        mbus.STATUS_REQUEST,
+        mbus.APP_RESET_ALL,
+        mbus.REQ_UD2,
+        mbus.APP_RESET_FIRST_ONLY,
+    ]
     assert reading.history
+    assert reading.wake_attempts == 1
 
 
 def test_application_reset_frames() -> None:

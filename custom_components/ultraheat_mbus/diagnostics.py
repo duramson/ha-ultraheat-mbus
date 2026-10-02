@@ -63,6 +63,8 @@ async def async_get_config_entry_diagnostics(
             else None,
             "failures_in_a_row": coordinator.failures_in_a_row,
             "counts": dict(coordinator.counts),
+            "state_requests_until_answer": dict(coordinator.wake_attempts),
+            "data_requests_until_answer": dict(coordinator.read_attempts),
         },
     }
     if reading is None:  # no answer since the start

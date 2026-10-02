@@ -92,7 +92,6 @@ async def test_history_imported_after_setup(
     assert read_meter.call_args_list[-1].kwargs == {
         "all_telegrams": True,
         "first_only": False,
-        "status_first": False,
     }
 
 

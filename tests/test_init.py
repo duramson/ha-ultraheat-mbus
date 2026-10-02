@@ -139,45 +139,53 @@ def test_next_poll_daylight_saving(day: datetime, interval: int) -> None:
     assert {b - a for a, b in itertools.pairwise(polls)} == {interval * 60}
 
 
-async def test_poll_asks_for_meter_state_when_silent(
+async def test_poll_counts_wake_attempts(
     hass: HomeAssistant,
     config_entry: MockConfigEntry,
     read_meter: MagicMock,
     reading: MeterReading,
 ) -> None:
-    """A silent meter is asked for its state and read again, and that is counted."""
+    """A poll reads the meter once and counts how many requests it took."""
     config_entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
 
-    read_meter.side_effect = [NoResponseError("only the echo"), reading]
+    read_meter.reset_mock()
+    read_meter.return_value = replace(reading, wake_attempts=4, read_attempts=2)
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=16))
     await hass.async_block_till_done()
 
     coordinator = config_entry.runtime_data
     assert coordinator.last_update_success
-    assert read_meter.call_args_list[-2].kwargs["status_first"] is False
-    assert read_meter.call_args_list[-1].kwargs["status_first"] is True
-    assert coordinator.counts["no_answer_directly"] == 1
-    assert coordinator.counts["answered_after_state_request"] == 1
+    assert read_meter.call_count == 1
+    assert coordinator.counts["answered"] == 2  # setup and poll
+    assert coordinator.wake_attempts["4"] == 1
+    assert coordinator.read_attempts["2"] == 1
     assert coordinator.failures_in_a_row == 0
     assert hass.states.get("sensor.heat_meter_12345678_heat_energy").state == "143"
 
 
-async def test_poll_fails_when_silent_twice(
-    hass: HomeAssistant, config_entry: MockConfigEntry, read_meter: MagicMock
+async def test_poll_fails_when_silent(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    read_meter: MagicMock,
+    reading: MeterReading,
 ) -> None:
+    read_meter.return_value = replace(reading, wake_attempts=1)
     config_entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
 
+    read_meter.reset_mock()
     read_meter.side_effect = NoResponseError("only the echo")
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=16))
     await hass.async_block_till_done()
 
     coordinator = config_entry.runtime_data
     assert not coordinator.last_update_success
-    assert coordinator.counts["no_answer_after_state_request"] == 1
+    assert read_meter.call_count == 1  # waking and repeating happen in read_meter
+    assert coordinator.counts["no_answer"] == 1
+    assert coordinator.wake_attempts["never"] == 1
     assert coordinator.failures_in_a_row == 1
     state = hass.states.get("sensor.heat_meter_12345678_heat_energy")
     assert state.state == STATE_UNAVAILABLE

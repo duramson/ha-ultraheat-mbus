@@ -30,21 +30,23 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        raw = mbus.read_raw_all_telegrams(args.port) if args.all else mbus.read_raw(args.port)
+        reading = mbus.read_meter(args.port, all_telegrams=args.all)
     except (OSError, serialx.SerialException) as err:
         print(f"error: cannot use {args.port}: {err}", file=sys.stderr)
         return 1
-    if args.raw:
-        print(raw.hex())
-    try:
-        reading = mbus.parse_readout(raw)
     except mbus.MbusError as err:
-        print(f"error: {err} ({len(raw)} bytes received)", file=sys.stderr)
+        print(f"error: {err}", file=sys.stderr)
         return 1
+    if args.raw:
+        print(reading.raw.hex())
 
     print(
         f"{reading.manufacturer_name} {reading.identification}, "
         f"version {reading.version}, medium 0x{reading.medium:02x}"
+    )
+    print(
+        f"  meter state {reading.meter_state!r} after {reading.wake_attempts} state"
+        f" requests, answered the {reading.read_attempts}. data request"
     )
     for name in (
         "heat_energy",

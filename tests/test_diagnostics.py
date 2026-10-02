@@ -31,7 +31,7 @@ async def test_diagnostics_contain_no_identification(
     assert "by-id" not in serialized
     assert diagnostics["reading"]["heat_energy"] == 143
     assert diagnostics["communication"]["last_update_success"] is True
-    assert diagnostics["communication"]["counts"]["answered_directly"] == 1
+    assert diagnostics["communication"]["counts"]["answered"] == 1
 
     # The exported telegrams can be analysed again with the same parser.
     stream = b"".join(bytes.fromhex(t["frame_hex_redacted"]) for t in diagnostics["telegrams"])

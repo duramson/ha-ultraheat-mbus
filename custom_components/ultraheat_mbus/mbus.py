@@ -14,6 +14,11 @@ Protocol summary (EN 13757-2/-3 over the optical interface, EN 62056-21 hardware
   the optical interface, a T230 follows it on its own with 27 frames of due-date and
   monthly storage values (about 20 s). An application reset selects between the two
   (Landis+Gyr TKB3462, section 5.1); the factory default is the first frame only.
+* After a while without communication a T230 answers neither the data request nor
+  "Get meter state" on the first attempt. Every readout therefore starts by asking for
+  the meter state, a few times in quick succession until it answers, and then sends the
+  data request up to three times without a pause, as the Landis+Gyr service software
+  does after its state request.
 * The T230 technical description specifies more than one minute between readouts for
   its wired M-Bus at 2400 baud. The same minimum is used for the optical interface.
 """
@@ -43,6 +48,12 @@ ACK = 0xE5
 # that read these meters reliably send it before the data request.
 STATUS_REQUEST = bytes.fromhex("68050568" "53FE510F0F" "C016")
 CI_STATUS = 0x78
+# Scripts that read T330 meters for years repeat the wake-up with the state request up
+# to ten times, one to two seconds apart, until the meter answers.
+WAKE_ATTEMPTS = 10
+WAKE_PAUSE = 1.0  # seconds after an unanswered state request
+# The Landis+Gyr service software sends the data request up to three times in a row.
+READ_ATTEMPTS = 3
 MIN_READ_INTERVAL = 60  # seconds; T230 wired M-Bus minimum, used for the optical port too
 
 C_RSP_UD = 0x08  # control field; ACD and DFC bits masked
@@ -82,6 +93,11 @@ class MbusError(Exception):
 
 class NoResponseError(MbusError):
     """The meter did not answer."""
+
+    def __init__(self, message: str, *, wake_attempts: int | None = None) -> None:
+        """Store after how many attempts the meter state was answered, if it was."""
+        super().__init__(message)
+        self.wake_attempts = wake_attempts
 
 
 class InvalidFrameError(MbusError):
@@ -199,7 +215,9 @@ class MeterReading:
     firmware_version: str | None = None
     rolling_frame_optical: bool | None = None
     access_number: int | None = None  # of the telegram with the current values
-    meter_state: str | None = None  # answer to STATUS_REQUEST, if it was sent
+    meter_state: str | None = None  # answer to STATUS_REQUEST, if there was one
+    wake_attempts: int | None = None  # state requests until the meter answered
+    read_attempts: int = 1  # data requests until the meter answered
     telegrams: list[Telegram] = field(default_factory=list)
     undecoded: list[tuple[bytes, str]] = field(default_factory=list)  # (frame, error)
     history: list[StoredValue] = field(default_factory=list)  # oldest first
@@ -809,42 +827,76 @@ def request_status(port: str) -> str:
     raise NoResponseError(_describe_missing_answer(stream, STATUS_REQUEST))
 
 
+def wake(port: str, attempts: int = WAKE_ATTEMPTS) -> tuple[str, int]:
+    """Ask for the meter state until the meter answers.
+
+    Returns the state and the number of attempts it took. Raises NoResponseError with
+    the error of the last attempt when the meter answered none of them.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return request_status(port), attempt
+        except NoResponseError as err:
+            if attempt == attempts:
+                raise NoResponseError(f"{err} ({attempts} attempts)") from err
+        time.sleep(WAKE_PAUSE)
+    raise ValueError("attempts must be at least 1")
+
+
 def read_meter(
     port: str,
     *,
     all_telegrams: bool = False,
     first_only: bool = False,
-    status_first: bool = False,
+    wake_attempts: int = WAKE_ATTEMPTS,
+    read_attempts: int = READ_ATTEMPTS,
 ) -> MeterReading:
-    """Read the meter on ``port`` and return its current values.
+    """Wake the meter on ``port`` and return its current values.
+
+    The meter is first asked for its state until it answers (see ``wake``). The data
+    request follows also when it never does, for meters that do not know the state
+    request; then up to ``read_attempts`` times in a row.
 
     ``first_only`` first switches a meter that sends all its telegrams on every request
     (Landis+Gyr rolling frame) back to sending only the first one, which carries the
     current values and takes a fraction of the time on the wire.
 
     With ``all_telegrams`` the meter is switched to sending all telegrams for this one
-    readout and back to the first telegram afterwards.
-
-    ``status_first`` asks for the meter state before the data request. The data
-    request is sent also when the state request stays unanswered.
+    readout and back to the first telegram afterwards. That readout is not repeated.
     """
-    meter_state = None
-    if status_first:
-        try:
-            meter_state = request_status(port)
-        except NoResponseError:
-            pass  # the data request shows whether the meter answers at all
-    if all_telegrams:
-        return replace(parse_readout(read_raw_all_telegrams(port)), meter_state=meter_state)
-    # Command and request may follow each other right away: on a T230, switching the
-    # rolling frame on, reading and switching it off again in a row was acknowledged
-    # and answered.
-    if first_only:
-        try:
-            send_command(port, APP_RESET_FIRST_ONLY)
-        except NoResponseError:
-            pass  # read anyway: the request is answered either way, only with more frames
-    return replace(parse_readout(read_raw(port)), meter_state=meter_state)
+    meter_state: str | None = None
+    woken_after: int | None = None
+    try:
+        meter_state, woken_after = wake(port, wake_attempts)
+    except NoResponseError as err:
+        state_detail = f"meter state request unanswered: {err}"
+    else:
+        state_detail = (
+            f"meter state {meter_state!r} answered after {woken_after} attempts"
+        )
+    awake = {"meter_state": meter_state, "wake_attempts": woken_after}
+    try:
+        if all_telegrams:
+            return replace(parse_readout(read_raw_all_telegrams(port)), **awake)
+        # Command and request may follow each other right away: on a T230, switching
+        # the rolling frame on, reading and switching it off again in a row was
+        # acknowledged and answered.
+        if first_only:
+            try:
+                send_command(port, APP_RESET_FIRST_ONLY)
+            except NoResponseError:
+                pass  # read anyway: the request is answered either way, with more frames
+        for attempt in range(1, read_attempts + 1):
+            try:
+                reading = parse_readout(read_raw(port))
+            except MbusError:
+                if attempt == read_attempts:
+                    raise
+            else:
+                return replace(reading, read_attempts=attempt, **awake)
+    except NoResponseError as err:
+        raise NoResponseError(f"{err}; {state_detail}", wake_attempts=woken_after) from err
+    raise ValueError("read_attempts must be at least 1")
 
 
 def read_raw_all_telegrams(port: str) -> bytes:
