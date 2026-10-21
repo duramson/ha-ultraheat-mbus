@@ -11,7 +11,9 @@ locally, with no cloud, radio key or additional hardware beyond the IR head.
 > Home Assistant aus. Das umfasst auch Geräte, die unter anderem Namen verbaut werden,
 > etwa den **ista ultego III smart** (Typschild `T230-…`) aus der Heizkostenabrechnung.
 > Werte: Wärmeenergie (kWh, Energie-Dashboard), Volumen, Leistung, Durchfluss, Vor- und
-> Rücklauftemperatur.
+> Rücklauftemperatur. Die im Zähler gespeicherten Monatswerte (bis etwa zwei Jahre zurück)
+> werden einmalig in die Langzeitstatistik importiert. Getestet mit einem Hichi IR USB;
+> Köpfe im WLAN (Tasmota, ESPHome) sind ungetestet.
 
 The meter model is printed on the type label. An ista ultego III smart with a type
 label starting with `T230-` is a Landis+Gyr T230.
@@ -20,6 +22,21 @@ The existing core integration [Landis+Gyr Heat Meter](https://www.home-assistant
 covers the older Ultraheat UH50 / T550, which answer with an IEC 62056-21 text telegram.
 The T230 and T330 do not; they answer with binary M-Bus frames, which is what this
 integration implements.
+
+## Features
+
+- **Energy dashboard:** heat energy in kWh, plus volume, power, flow rate, and flow and
+  return temperature.
+- **Meter history:** the monthly values stored in the meter, up to about two years back, are
+  imported into the long-term statistics once, so the energy dashboard does not start empty
+  ([details](#meter-history)).
+- **Readout timing:** readouts are timed to the end of each interval, so the consumption of
+  an hour lands in that hour of the statistics.
+- **Waking the meter:** repeats the wake-up when the meter does not answer the first
+  request, and switches off the rolling frame that otherwise keeps a T230 transmitting for
+  about 20 seconds per readout ([details](#how-it-works)).
+- **Diagnostics:** raw telegrams with identification and fabrication numbers zeroed, for
+  analysing other meters.
 
 ## Supported meters
 
@@ -49,9 +66,18 @@ with identification and fabrication numbers zeroed; please attach it to an issue
 
 ## Hardware
 
-Any IR read/write head according to IEC 62056-21 that shows up as a serial port, for example
-a Hichi IR USB head or a comparable USB/TTL head. The head sits magnetically on the optical
-interface (the round port next to the display, marked with a triangle on ista devices).
+Any IR read/write head according to IEC 62056-21 that shows up as a serial port. The
+integration has been developed and tested with a **Hichi IR USB** head (CP2102 converter);
+comparable USB/TTL heads are expected to work as well. The head sits magnetically on the
+optical interface (the round port next to the display, marked with a triangle on ista
+devices).
+
+Only heads connected to the Home Assistant host have been tested. Heads reached over the
+network, for example a Hichi WiFi with Tasmota, ser2net or an ESPHome serial proxy, are
+untested. The port field accepts a manually entered address such as `socket://host:port`
+(the bridge then has to use 2400 baud, 8E1 itself). Waking the meter relies on the request
+following the preamble without a pause (see [How it works](#how-it-works)), which a network
+bridge does not guarantee. Reports are welcome.
 
 When Home Assistant runs in a virtual machine, pass the USB device through to the VM. Many
 IR heads use a CP210x or CH340 converter with the vendor's default USB IDs; if another device
@@ -62,8 +88,10 @@ USB port instead of by vendor/product ID.
 
 ### HACS
 
-1. HACS → ⋮ → *Custom repositories* → add `https://github.com/duramson/ha-ultraheat-mbus` as
-   type *Integration*.
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=duramson&repository=ha-ultraheat-mbus&category=integration)
+
+1. Click the button above, or add the repository by hand: HACS → ⋮ → *Custom repositories* →
+   add `https://github.com/duramson/ha-ultraheat-mbus` as type *Integration*.
 2. Install *Ultraheat M-Bus (Landis+Gyr, ista, Qundis)* and restart Home Assistant.
 
 ### Manual
