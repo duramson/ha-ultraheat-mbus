@@ -25,7 +25,7 @@ integration implements.
 
 | Meter | Status |
 |---|---|
-| ista ultego III smart (`u3.0s radio`, type label `T230-…`, article 77450) | single readouts tested, continuous operation under test (see [Limitations](#limitations)) |
+| ista ultego III smart (`u3.0s radio`, type label `T230-…`, article 77450) | read every hour since October 2026 (see [Limitations](#limitations)) |
 | Landis+Gyr Ultraheat T230 | expected to work (same device) |
 | Landis+Gyr Ultraheat T330 | untested; working T330 scripts use a different request sequence with a switch to 9600 baud, which is not implemented yet |
 | Qundis Qheat 5.5 | expected to work (reported as identical to T230/T330) |
@@ -35,9 +35,12 @@ with identification and fabrication numbers zeroed; please attach it to an issue
 
 ## Limitations
 
-- The tested ista meter answers without a button press, also more than an hour after the
-  last one. Long-term operation is still being tested. If your meter stops answering, press
-  its button and try again; reports on how your meter behaves are welcome.
+- The tested ista meter has been read every hour since October 2026 without a button press.
+  It often answers only after several state requests; the diagnostics show how many each
+  readout took. Once it stayed silent for about a day; after the head was centred again, it
+  answered again. If your meter stops answering, check the head (see
+  [Troubleshooting](#troubleshooting)) and press the meter's button; reports on how your
+  meter behaves are welcome.
 - The entities are created from the first readout during setup; values the meter reports
   only later get their sensor when they first appear. If the meter answers with another
   identification later (meter replaced or head moved to another meter), updates fail, and
@@ -78,8 +81,8 @@ The polling interval defaults to 15 minutes and can be changed in the integratio
 (2 to 1440 minutes). Readouts start three minutes before the end of each interval,
 counted from midnight: with 60 minutes at hh:57, with 15 minutes at hh:12, hh:27, hh:42 and
 hh:57. The consumption of an hour then ends up in that hour of the statistics instead of
-being split between two. If the meter does not answer, the integration asks for the meter
-state a minute later and reads again, still before the end of the interval.
+being split between two. If the meter does not answer, the entities become unavailable
+until the next scheduled readout.
 
 ## Entities
 
