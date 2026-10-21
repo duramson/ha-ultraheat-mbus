@@ -38,6 +38,11 @@ integration implements.
 - **Diagnostics:** raw telegrams with identification and fabrication numbers zeroed, for
   analysing other meters.
 
+<img src="https://raw.githubusercontent.com/duramson/ha-ultraheat-mbus/main/images/meter-history.png" width="551" alt="Statistics graph card with the heat energy per month from March to October 2026">
+
+*Heat energy per month in a statistics graph card. The integration was set up at the end of
+September 2026; the months before come from the meter's storage.*
+
 ## Supported meters
 
 | Meter | Status |
