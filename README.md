@@ -49,7 +49,7 @@ September 2026; the months before come from the meter's storage.*
 |---|---|
 | ista ultego III smart (`u3.0s radio`, type label `T230-…`, article 77450) | read every hour since October 2026 (see [Limitations](#limitations)) |
 | Landis+Gyr Ultraheat T230 | expected to work (same device) |
-| Landis+Gyr Ultraheat T330 | untested; working T330 scripts use a different request sequence with a switch to 9600 baud, which is not implemented yet |
+| Landis+Gyr Ultraheat T330 | works with 0.4.0, including the history import ([#1](https://github.com/duramson/ha-ultraheat-mbus/issues/1)); read at 2400 baud, without the switch to 9600 baud that T330 scripts use |
 | Qundis Qheat 5.5 | expected to work (reported as identical to T230/T330) |
 
 Reports for other meters are welcome. The diagnostics download contains the raw telegrams
